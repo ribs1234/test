@@ -67,7 +67,35 @@ In the page, enter:
 - Query text
 - Optional space key / limit
 - Auth:
+  - **Okta sign-in (OAuth PKCE)**, or
   - Email + API token, or
   - Bearer token
 
 The app sends requests from your local server process to Confluence over HTTPS.
+
+### Okta OAuth setup
+
+If your org uses Okta for auth, configure these environment variables before starting the web app:
+
+```bash
+export OKTA_ISSUER="https://your-okta-domain/oauth2/default"
+export OKTA_CLIENT_ID="your_okta_oidc_client_id"
+# Optional overrides:
+# export OKTA_SCOPE="openid profile email offline_access"
+# export OKTA_AUDIENCE="api://default"
+```
+
+Then run:
+
+```bash
+python3 confluence_search_web.py --host 127.0.0.1 --port 8000
+```
+
+In the UI:
+1. click **Sign in with Okta**
+2. complete login in Okta
+3. return to app and search Confluence (token is used automatically)
+
+Notes:
+- Your Okta app must allow redirect URI: `http://127.0.0.1:8000/auth/callback`
+- If your Okta policy issues refresh tokens, the app can silently refresh access tokens

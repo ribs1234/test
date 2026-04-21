@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from html import unescape
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -60,22 +60,66 @@ class ConfluenceSearchAgent:
 
     @staticmethod
     def _candidate_api_roots(base_url: str) -> list[str]:
-        trimmed = base_url.rstrip("/")
-        candidates: list[str] = []
-        if trimmed.endswith("/wiki"):
-            candidates.append(trimmed)
-            without_wiki = trimmed[: -len("/wiki")].rstrip("/")
-            if without_wiki:
-                candidates.append(without_wiki)
-        else:
-            candidates.append(f"{trimmed}/wiki")
-            candidates.append(trimmed)
+        parsed = urlparse(base_url.strip())
+        if not parsed.scheme or not parsed.netloc:
+            trimmed = base_url.rstrip("/")
+            fallback = [f"{trimmed}/wiki", trimmed]
+            return [candidate for candidate in fallback if candidate]
 
-        unique: list[str] = []
-        for candidate in candidates:
-            if candidate and candidate not in unique:
-                unique.append(candidate)
-        return unique
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        lowered_segments = [segment.lower() for segment in segments]
+        known_page_markers = {
+            "spaces",
+            "display",
+            "pages",
+            "x",
+            "rest",
+            "plugins",
+            "login.action",
+            "dologin.action",
+        }
+
+        context_segments: list[str] = []
+        if segments:
+            if lowered_segments[0] == "wiki":
+                context_segments = segments[:1]
+            else:
+                marker_index = next(
+                    (
+                        idx
+                        for idx, segment in enumerate(lowered_segments)
+                        if segment in known_page_markers
+                    ),
+                    None,
+                )
+                if marker_index is None:
+                    context_segments = segments
+                else:
+                    context_segments = segments[:marker_index]
+
+        context_path = f"/{'/'.join(context_segments)}" if context_segments else ""
+        candidates: list[str] = []
+
+        def add_candidate(path: str) -> None:
+            candidate = f"{origin}{path}".rstrip("/")
+            if not candidate:
+                return
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        if context_path:
+            add_candidate(context_path)
+            if context_path.endswith("/wiki"):
+                without_wiki = context_path[: -len("/wiki")]
+                add_candidate(without_wiki)
+            else:
+                add_candidate(f"{context_path}/wiki")
+        else:
+            add_candidate("/wiki")
+
+        add_candidate("")
+        return candidates
 
     @staticmethod
     def _strip_html(text: str) -> str:

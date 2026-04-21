@@ -211,11 +211,14 @@ class ConfluenceConversationAgent:
             )
 
         mode = "I fetched additional matches. " if from_more else ""
-        answer = self._answer_from_results(intent, results)
+        best = results[0]
+        answer = self._answer_from_results(intent, best)
         result_summary = self._summarize_result_set(results)
+        likely_link = best.url or "No link available."
         return ConversationTurn(
             reply=(
                 f"{mode}Answer: {answer} "
+                f"Most likely result link: {likely_link}. "
                 f"Result summary: {result_summary} "
                 f"I found {len(results)} page(s){scope} for '{query}' "
                 f"(intent: {self._intent_label(intent)}). "
@@ -234,8 +237,7 @@ class ConfluenceConversationAgent:
             clipped = clipped.rsplit(" ", 1)[0]
         return f"{clipped}..."
 
-    def _answer_from_results(self, intent: QueryIntent, results: list[SearchResult]) -> str:
-        best = results[0]
+    def _answer_from_results(self, intent: QueryIntent, best: SearchResult) -> str:
         best_summary = self._shorten(best.summary, max_len=210)
         if intent.intent_label == "ownership":
             return (

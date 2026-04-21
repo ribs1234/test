@@ -1,6 +1,6 @@
 # Lightweight Confluence Search Agent
 
-Small Python CLI tool for searching Confluence pages by query using the Confluence REST API.
+Small Python tools for searching Confluence pages by query using the Confluence REST API.
 
 ## Requirements
 
@@ -10,6 +10,7 @@ Small Python CLI tool for searching Confluence pages by query using the Confluen
 ## Files
 
 - `confluence_search_agent.py` - main CLI and lightweight search client
+- `confluence_search_web.py` - local web UI served on `localhost`
 
 ## Authentication
 
@@ -46,3 +47,27 @@ python confluence_search_agent.py "incident runbook" --json
 ```
 
 You can also pass credentials and URL as flags (`--base-url`, `--email`, `--api-token`, `--bearer-token`), but environment variables are simpler for local usage.
+
+## Local Web UI (localhost)
+
+Run:
+
+```bash
+python3 confluence_search_web.py --host 127.0.0.1 --port 8000
+```
+
+Open in your browser:
+
+```text
+http://127.0.0.1:8000
+```
+
+In the page, enter:
+- Confluence web address (example: `https://your-domain.atlassian.net`)
+- Query text
+- Optional space key / limit
+- Auth:
+  - Email + API token, or
+  - Bearer token
+
+The app sends requests from your local server process to Confluence over HTTPS.

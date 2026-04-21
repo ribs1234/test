@@ -83,6 +83,50 @@ class ConfluenceSearchAgent:
         headers["Authorization"] = f"Basic {token}"
         return headers
 
+    @staticmethod
+    def _decode_body(payload: bytes, content_type: str) -> str:
+        match = re.search(r"charset=([^\s;]+)", content_type or "", flags=re.IGNORECASE)
+        encoding = (match.group(1).strip('"\'') if match else "") or "utf-8"
+        try:
+            return payload.decode(encoding, errors="replace")
+        except LookupError:
+            return payload.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _one_line_snippet(text: str, *, max_len: int = 220) -> str:
+        compact = re.sub(r"\s+", " ", text or "").strip()
+        if len(compact) <= max_len:
+            return compact
+        return f"{compact[:max_len]}..."
+
+    def _parse_json_payload(
+        self,
+        payload: bytes,
+        *,
+        content_type: str,
+        context: str,
+    ) -> dict[str, Any]:
+        text = self._decode_body(payload, content_type).lstrip("\ufeff").strip()
+        if text.startswith(")]}',"):
+            text = text[5:].lstrip()
+        elif text.startswith(")]}'"):
+            text = text[4:].lstrip()
+
+        try:
+            data = json.loads(text or "{}")
+        except json.JSONDecodeError as exc:
+            snippet = self._one_line_snippet(text)
+            raise ConfluenceSearchError(
+                f"{context} was not valid JSON (content-type: {content_type or 'unknown'}). "
+                f"Response snippet: {snippet or '<empty>'}"
+            ) from exc
+
+        if not isinstance(data, dict):
+            raise ConfluenceSearchError(
+                f"{context} returned unexpected JSON type: {type(data).__name__}"
+            )
+        return data
+
     def search(
         self,
         query: str,
@@ -111,7 +155,13 @@ class ConfluenceSearchAgent:
 
         try:
             with urlopen(req, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                payload = response.read()
+                content_type = response.headers.get("Content-Type", "")
+                data = self._parse_json_payload(
+                    payload,
+                    content_type=content_type,
+                    context="Confluence search response",
+                )
         except HTTPError as exc:
             detail = self._extract_error_detail(exc)
             raise ConfluenceSearchError(
@@ -119,20 +169,35 @@ class ConfluenceSearchAgent:
             ) from exc
         except URLError as exc:
             raise ConfluenceSearchError(f"Could not connect to Confluence: {exc}") from exc
-        except json.JSONDecodeError as exc:
-            raise ConfluenceSearchError("Confluence returned invalid JSON.") from exc
 
         return self._parse_results(data)
 
     def _extract_error_detail(self, error: HTTPError) -> str:
         try:
-            payload = error.read().decode("utf-8")
-            parsed = json.loads(payload)
+            raw = error.read()
+            content_type = error.headers.get("Content-Type", "") if error.headers else ""
+            parsed = self._parse_json_payload(
+                raw,
+                content_type=content_type,
+                context="Confluence error response",
+            )
             for key in ("message", "reason", "error", "statusMessage"):
                 if key in parsed and parsed[key]:
                     return str(parsed[key])
-            return payload or "No error detail provided."
+            return self._one_line_snippet(json.dumps(parsed)) or "No error detail provided."
         except Exception:
+            try:
+                raw = error.read()
+                content_type = error.headers.get("Content-Type", "") if error.headers else ""
+                text = self._decode_body(raw, content_type)
+                snippet = self._one_line_snippet(text)
+                if snippet:
+                    return (
+                        f"Non-JSON error response (content-type: {content_type or 'unknown'}): "
+                        f"{snippet}"
+                    )
+            except Exception:
+                pass
             return "No error detail provided."
 
     def _parse_results(self, data: dict[str, Any]) -> list[SearchResult]:

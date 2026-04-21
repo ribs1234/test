@@ -6,10 +6,22 @@ from __future__ import annotations
 import argparse
 import json
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import secrets
+import time
 from typing import Any
 
+from confluence_conversation_agent import (
+    ConfluenceConversationAgent,
+    ConversationState,
+    serialize_results,
+)
 from confluence_search_agent import ConfluenceSearchAgent, ConfluenceSearchError
+
+SESSION_COOKIE = "confluence_chat_session"
+SESSION_TTL_SECONDS = 60 * 60 * 8
+SESSION_STATES: dict[str, dict[str, Any]] = {}
 
 INDEX_HTML = """<!doctype html>
 <html lang="en">
@@ -199,9 +211,49 @@ INDEX_HTML = """<!doctype html>
         color: var(--text);
         line-height: 1.5;
       }
+      .chat-wrap {
+        display: grid;
+        gap: 0.8rem;
+      }
+      #chat-log {
+        max-height: 320px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface-soft);
+        padding: 0.75rem;
+        display: grid;
+        gap: 0.55rem;
+      }
+      .bubble {
+        padding: 0.6rem 0.72rem;
+        border-radius: 10px;
+        line-height: 1.45;
+        font-size: 0.92rem;
+      }
+      .bubble.user {
+        background: rgba(0, 163, 224, 0.12);
+        border: 1px solid rgba(0, 163, 224, 0.26);
+      }
+      .bubble.assistant {
+        background: rgba(77, 20, 140, 0.08);
+        border: 1px solid rgba(77, 20, 140, 0.2);
+      }
+      .chat-form {
+        display: flex;
+        gap: 0.65rem;
+        align-items: center;
+      }
+      .chat-form input {
+        flex: 1;
+      }
       @media (max-width: 760px) {
         form {
           grid-template-columns: 1fr;
+        }
+        .chat-form {
+          flex-direction: column;
+          align-items: stretch;
         }
       }
     </style>
@@ -280,6 +332,23 @@ INDEX_HTML = """<!doctype html>
       </section>
 
       <section class="panel">
+        <div class="chat-wrap">
+          <strong>Conversation Assistant</strong>
+          <div id="chat-log" aria-live="polite"></div>
+          <form id="chat-form" class="chat-form">
+            <input
+              id="chat-message"
+              name="chat_message"
+              placeholder="Ask follow-ups like: who owns this service, summarize result 2, or show more"
+              required
+            />
+            <button type="submit">Send</button>
+          </form>
+          <span class="hint">Conversation remembers context in this browser session.</span>
+        </div>
+      </section>
+
+      <section class="panel">
         <div id="status" aria-live="polite"></div>
         <div id="loading-indicator" class="loading-wrap" aria-hidden="true">
           <img
@@ -297,6 +366,9 @@ INDEX_HTML = """<!doctype html>
       const statusEl = document.getElementById("status");
       const loadingEl = document.getElementById("loading-indicator");
       const resultsEl = document.getElementById("results");
+      const chatLogEl = document.getElementById("chat-log");
+      const chatFormEl = document.getElementById("chat-form");
+      const chatMessageEl = document.getElementById("chat-message");
 
       function status(message, isError = false) {
         statusEl.textContent = message;
@@ -311,6 +383,25 @@ INDEX_HTML = """<!doctype html>
         }
         loadingEl.classList.remove("active");
         loadingEl.setAttribute("aria-hidden", "true");
+      }
+
+      function appendChatBubble(role, text) {
+        const bubble = document.createElement("div");
+        bubble.className = "bubble " + role;
+        bubble.textContent = text;
+        chatLogEl.appendChild(bubble);
+        chatLogEl.scrollTop = chatLogEl.scrollHeight;
+      }
+
+      function currentSettings() {
+        return {
+          base_url: document.getElementById("base-url").value.trim(),
+          personal_access_token: document.getElementById("personal-access-token").value,
+          email: document.getElementById("email").value.trim(),
+          api_token: document.getElementById("api-token").value,
+          space_key: document.getElementById("space-key").value.trim() || null,
+          limit: Number(document.getElementById("limit").value || 10),
+        };
       }
 
       function renderResults(items) {
@@ -364,13 +455,8 @@ INDEX_HTML = """<!doctype html>
         resultsEl.textContent = "";
 
         const payload = {
-          base_url: document.getElementById("base-url").value.trim(),
-          personal_access_token: document.getElementById("personal-access-token").value,
-          email: document.getElementById("email").value.trim(),
-          api_token: document.getElementById("api-token").value,
+          ...currentSettings(),
           query: document.getElementById("query").value.trim(),
-          space_key: document.getElementById("space-key").value.trim() || null,
-          limit: Number(document.getElementById("limit").value || 10),
         };
 
         try {
@@ -391,6 +477,46 @@ INDEX_HTML = """<!doctype html>
           setLoading(false);
         }
       });
+
+      chatFormEl.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = chatMessageEl.value.trim();
+        if (!message) return;
+        appendChatBubble("user", message);
+        chatMessageEl.value = "";
+        status("Conversation search running...");
+        setLoading(true);
+
+        const payload = {
+          message,
+          settings: currentSettings(),
+        };
+
+        try {
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || "Conversation request failed.");
+          }
+          appendChatBubble("assistant", data.reply || "Done.");
+          renderResults(data.results || []);
+          status("Conversation updated.");
+        } catch (err) {
+          appendChatBubble("assistant", err.message || "Conversation request failed.");
+          status(err.message || "Conversation request failed.", true);
+        } finally {
+          setLoading(false);
+        }
+      });
+
+      appendChatBubble(
+        "assistant",
+        "Ready. Ask a question like 'who owns vault oncall?' then follow up with 'summarize result 2' or 'show more'."
+      );
     </script>
   </body>
 </html>
@@ -402,17 +528,22 @@ class SearchHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
         if self.path == "/" or self.path.startswith("/?"):
+            self._get_or_create_conversation_state()
             self._write_html(INDEX_HTML)
             return
         self._write_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
-        if self.path != "/api/search":
+        if self.path not in {"/api/search", "/api/chat"}:
             self._write_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
             return
 
         payload = self._read_json_payload()
         if payload is None:
+            return
+
+        if self.path == "/api/chat":
+            self._handle_chat(payload)
             return
 
         query = str(payload.get("query", "")).strip()
@@ -441,6 +572,38 @@ class SearchHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
+    def _handle_chat(self, payload: dict[str, Any]) -> None:
+        message = str(payload.get("message", "")).strip()
+        if not message:
+            self._write_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        settings = payload.get("settings", {})
+        if not isinstance(settings, dict):
+            self._write_json(
+                {"error": "settings must be an object"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        session_state = self._get_or_create_conversation_state()
+        try:
+            agent = ConfluenceConversationAgent(session_state)
+            turn = agent.handle_message(message, settings)
+            self._write_json(
+                {
+                    "reply": turn.reply,
+                    "results": serialize_results(turn.results),
+                }
+            )
+        except (ValueError, ConfluenceSearchError) as exc:
+            self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self._write_json(
+                {"error": "Unexpected server error while handling conversation."},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+
     def _read_json_payload(self) -> dict[str, Any] | None:
         try:
             raw_length = self.headers.get("Content-Length", "0")
@@ -460,6 +623,7 @@ class SearchHandler(BaseHTTPRequestHandler):
     def _write_html(self, html: str, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = html.encode("utf-8")
         self.send_response(status)
+        self._maybe_set_session_cookie()
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -468,10 +632,56 @@ class SearchHandler(BaseHTTPRequestHandler):
     def _write_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
+        self._maybe_set_session_cookie()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _get_or_create_conversation_state(self) -> ConversationState:
+        self._purge_expired_sessions()
+        cookie_header = self.headers.get("Cookie", "")
+        cookies = SimpleCookie()
+        if cookie_header:
+            cookies.load(cookie_header)
+
+        session_id = cookies[SESSION_COOKIE].value if SESSION_COOKIE in cookies else ""
+        if session_id and session_id in SESSION_STATES:
+            entry = SESSION_STATES[session_id]
+            entry["last_seen"] = int(time.time())
+            return entry["state"]
+
+        session_id = secrets.token_urlsafe(24)
+        state = ConversationState()
+        SESSION_STATES[session_id] = {
+            "state": state,
+            "created_at": int(time.time()),
+            "last_seen": int(time.time()),
+        }
+        self._session_id_to_set = session_id
+        return state
+
+    @staticmethod
+    def _purge_expired_sessions() -> None:
+        now = int(time.time())
+        expired = [
+            sid
+            for sid, entry in SESSION_STATES.items()
+            if now - int(entry.get("last_seen", 0)) > SESSION_TTL_SECONDS
+        ]
+        for sid in expired:
+            SESSION_STATES.pop(sid, None)
+
+    def _maybe_set_session_cookie(self) -> None:
+        session_id = getattr(self, "_session_id_to_set", None)
+        if not session_id:
+            return
+        cookie = (
+            f"{SESSION_COOKIE}={session_id}; Max-Age={SESSION_TTL_SECONDS}; "
+            "Path=/; HttpOnly; SameSite=Lax"
+        )
+        self.send_header("Set-Cookie", cookie)
+        self._session_id_to_set = None
 
     def log_message(self, fmt: str, *args: Any) -> None:
         # Keep logs concise for local usage.

@@ -11,6 +11,7 @@ Small Python tools for searching Confluence pages by query using the Confluence 
 
 - `confluence_search_agent.py` - main CLI and lightweight search client
 - `confluence_search_web.py` - local web UI served on `localhost`
+- `confluence_conversation_agent.py` - multi-turn conversation layer for follow-up questions
 
 ## Authentication
 
@@ -83,3 +84,16 @@ In the page, enter:
 The app sends requests from your local server process to Confluence over HTTPS.
 
 Search results include an AI-style summary generated from page content (no search snippet output).
+
+### Conversation Layer (in web UI)
+
+The web app includes a conversation panel that keeps session context and supports follow-up queries:
+
+- Ask a natural question (example: `who owns vault oncall?`)
+- Follow up with:
+  - `summarize result 2`
+  - `show more`
+  - `again`
+  - `in ENG space ...` or `clear space filter`
+
+Conversation state is stored per browser session (via local server session cookie) and used only for this local app runtime.

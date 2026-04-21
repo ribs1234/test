@@ -7,6 +7,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import secrets
 import time
 from http import HTTPStatus
@@ -21,6 +22,7 @@ from confluence_search_agent import ConfluenceSearchAgent, ConfluenceSearchError
 SESSION_COOKIE = "confluence_session"
 SESSION_TTL_SECONDS = 60 * 60 * 8
 SESSIONS: dict[str, dict[str, Any]] = {}
+OKTA_CLIENT_ID = os.getenv("OKTA_CLIENT_ID", "").strip()
 
 INDEX_HTML = """<!doctype html>
 <html lang="en">
@@ -105,8 +107,8 @@ INDEX_HTML = """<!doctype html>
           <input id="okta-issuer" name="okta_issuer" placeholder="https://your-org.okta.com/oauth2/default" />
         </label>
         <label class="full">
-          Okta Client ID
-          <input id="okta-client-id" name="okta_client_id" placeholder="0oa123exampleClientId" />
+          Okta Username
+          <input id="okta-username" name="okta_username" placeholder="you@company.com" />
         </label>
         <label class="full">
           Scopes
@@ -215,16 +217,16 @@ INDEX_HTML = """<!doctype html>
 
       function loadOktaConfig() {
         const issuer = localStorage.getItem("okta_issuer") || "";
-        const clientId = localStorage.getItem("okta_client_id") || "";
+        const username = localStorage.getItem("okta_username") || "";
         const scopes = localStorage.getItem("okta_scopes") || "openid profile email";
         document.getElementById("okta-issuer").value = issuer;
-        document.getElementById("okta-client-id").value = clientId;
+        document.getElementById("okta-username").value = username;
         document.getElementById("okta-scopes").value = scopes;
       }
 
       function saveOktaConfig() {
         localStorage.setItem("okta_issuer", document.getElementById("okta-issuer").value.trim());
-        localStorage.setItem("okta_client_id", document.getElementById("okta-client-id").value.trim());
+        localStorage.setItem("okta_username", document.getElementById("okta-username").value.trim());
         localStorage.setItem("okta_scopes", document.getElementById("okta-scopes").value.trim());
       }
 
@@ -249,12 +251,12 @@ INDEX_HTML = """<!doctype html>
         saveOktaConfig();
         const payload = {
           issuer: document.getElementById("okta-issuer").value.trim(),
-          client_id: document.getElementById("okta-client-id").value.trim(),
+          username: document.getElementById("okta-username").value.trim(),
           scopes: document.getElementById("okta-scopes").value.trim(),
         };
 
-        if (!payload.issuer || !payload.client_id) {
-          oktaStatusEl.textContent = "Okta issuer and client ID are required.";
+        if (!payload.issuer || !payload.username) {
+          oktaStatusEl.textContent = "Okta issuer and username are required.";
           oktaStatusEl.style.color = "crimson";
           return;
         }
@@ -401,11 +403,23 @@ class SearchHandler(BaseHTTPRequestHandler):
             return
 
         issuer = str(payload.get("issuer", "")).strip().rstrip("/")
-        client_id = str(payload.get("client_id", "")).strip()
+        username = str(payload.get("username", "")).strip()
         scopes = str(payload.get("scopes", "")).strip() or "openid profile email"
-        if not issuer or not client_id:
+        client_id = OKTA_CLIENT_ID
+        if not client_id:
             self._write_json(
-                {"error": "issuer and client_id are required"},
+                {
+                    "error": (
+                        "Server is missing OKTA_CLIENT_ID. "
+                        "Set OKTA_CLIENT_ID before starting the app."
+                    )
+                },
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if not issuer or not username:
+            self._write_json(
+                {"error": "issuer and username are required"},
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
@@ -420,6 +434,7 @@ class SearchHandler(BaseHTTPRequestHandler):
             "response_type": "code",
             "response_mode": "query",
             "scope": scopes,
+            "login_hint": username,
             "state": state,
             "code_challenge_method": "S256",
             "code_challenge": challenge,
@@ -428,6 +443,7 @@ class SearchHandler(BaseHTTPRequestHandler):
         session["okta_pending"] = {
             "issuer": issuer,
             "client_id": client_id,
+            "username": username,
             "scopes": scopes,
             "state": state,
             "code_verifier": verifier,

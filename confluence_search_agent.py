@@ -53,6 +53,55 @@ COMMON_STOPWORDS = {
     "our",
 }
 
+INTENT_PREFIX_RULES: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
+    (
+        "ownership",
+        (
+            "who owns ",
+            "who is responsible for ",
+            "owner of ",
+            "ownership of ",
+            "who manages ",
+        ),
+        ("owner", "ownership", "oncall", "contact", "team", "service"),
+    ),
+    (
+        "how_to",
+        (
+            "how do i ",
+            "how can i ",
+            "how to ",
+            "steps to ",
+            "process to ",
+            "procedure for ",
+        ),
+        ("runbook", "guide", "steps", "procedure", "playbook", "troubleshooting"),
+    ),
+    (
+        "location",
+        (
+            "where is ",
+            "where can i find ",
+            "find me ",
+            "find ",
+            "looking for ",
+            "search for ",
+            "show me ",
+        ),
+        ("overview", "home", "index", "reference", "documentation"),
+    ),
+    (
+        "definition",
+        (
+            "what is ",
+            "what are ",
+            "explain ",
+            "tell me about ",
+        ),
+        ("overview", "introduction", "background", "architecture", "reference"),
+    ),
+]
+
 
 class ConfluenceSearchError(RuntimeError):
     """Raised when Confluence search fails."""
@@ -72,6 +121,8 @@ class QueryIntent:
     original: str
     search_phrase: str
     keywords: list[str]
+    intent_label: str
+    boost_terms: list[str]
 
 
 class ConfluenceSearchAgent:
@@ -207,25 +258,24 @@ class ConfluenceSearchAgent:
     def _query_intent(query: str) -> QueryIntent:
         original = re.sub(r"\s+", " ", query or "").strip()
         if not original:
-            return QueryIntent(original="", search_phrase="", keywords=[])
+            return QueryIntent(
+                original="",
+                search_phrase="",
+                keywords=[],
+                intent_label="general",
+                boost_terms=[],
+            )
 
         lower = original.lower()
-        for prefix in (
-            "how do i ",
-            "how can i ",
-            "how to ",
-            "where is ",
-            "where can i find ",
-            "what is ",
-            "who owns ",
-            "show me ",
-            "find me ",
-            "find ",
-            "looking for ",
-            "search for ",
-        ):
-            if lower.startswith(prefix):
-                original = original[len(prefix) :].strip()
+        intent_label = "general"
+        boost_terms: list[str] = []
+        for label, prefixes, intent_terms in INTENT_PREFIX_RULES:
+            matched = next((prefix for prefix in prefixes if lower.startswith(prefix)), None)
+            if matched:
+                intent_label = label
+                boost_terms = list(intent_terms)
+                original = original[len(matched) :].strip()
+                lower = original.lower()
                 break
 
         search_phrase = original.rstrip(" ?.!")
@@ -293,6 +343,8 @@ class ConfluenceSearchAgent:
             original=query.strip(),
             search_phrase=search_phrase,
             keywords=keywords[:8],
+            intent_label=intent_label,
+            boost_terms=boost_terms,
         )
 
     @staticmethod
@@ -489,7 +541,12 @@ class ConfluenceSearchAgent:
                         f"Confluence search response JSON did not include a 'results' list. "
                         f"Payload snippet: {preview or '<empty>'}"
                     )
-                return self._parse_results(data, api_root=api_root, query=query)
+                return self._parse_results(
+                    data,
+                    api_root=api_root,
+                    query=query,
+                    intent=intent,
+                )
             except HTTPError as exc:
                 detail = self._extract_error_detail(exc)
                 attempt_errors.append(
@@ -533,8 +590,68 @@ class ConfluenceSearchAgent:
                 )
             return "No error detail provided."
 
+    def _result_boost_score(self, result: SearchResult, intent: QueryIntent) -> float:
+        if intent.intent_label == "general" and not intent.keywords:
+            return 0.0
+
+        title = (result.title or "").lower()
+        summary = (result.summary or "").lower()
+        haystack = f"{title} {summary}"
+        score = 0.0
+
+        for keyword in intent.keywords:
+            if keyword in title:
+                score += 2.6
+            elif keyword in haystack:
+                score += 1.4
+
+        for term in intent.boost_terms:
+            if term in title:
+                score += 2.8
+            elif term in haystack:
+                score += 1.8
+
+        if intent.intent_label == "ownership" and any(
+            marker in haystack
+            for marker in ("owner", "owned by", "oncall", "contact", "responsible")
+        ):
+            score += 2.5
+        elif intent.intent_label == "how_to" and any(
+            marker in haystack
+            for marker in ("runbook", "procedure", "steps", "guide", "troubleshooting")
+        ):
+            score += 2.2
+        elif intent.intent_label == "location" and any(
+            marker in haystack
+            for marker in ("overview", "home", "index", "reference", "catalog")
+        ):
+            score += 1.8
+        elif intent.intent_label == "definition" and any(
+            marker in haystack
+            for marker in ("overview", "introduction", "architecture", "background")
+        ):
+            score += 1.7
+
+        return score
+
+    def _rank_results_by_intent(
+        self, results: list[SearchResult], intent: QueryIntent
+    ) -> list[SearchResult]:
+        if len(results) <= 1:
+            return results
+
+        scored = [
+            (idx, self._result_boost_score(item, intent), item)
+            for idx, item in enumerate(results)
+        ]
+        if not any(score > 0 for _, score, _ in scored):
+            return results
+
+        ordered = sorted(scored, key=lambda item: (-item[1], item[0]))
+        return [item for _, _, item in ordered]
+
     def _parse_results(
-        self, data: dict[str, Any], *, api_root: str, query: str
+        self, data: dict[str, Any], *, api_root: str, query: str, intent: QueryIntent
     ) -> list[SearchResult]:
         items: list[SearchResult] = []
         top_links = data.get("_links", {})
@@ -572,7 +689,7 @@ class ConfluenceSearchAgent:
                 )
             )
 
-        return items
+        return self._rank_results_by_intent(items, intent)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

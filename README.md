@@ -37,6 +37,11 @@ python confluence_search_agent.py "incident runbook"
 ```
 
 Question-style queries are supported too (for example: `"where is the vault onboarding runbook?"`).
+Intent-specific boosts are applied for questions like:
+- ownership (`who owns ...`) -> boosts owner/contact/team/oncall style pages
+- how-to (`how do I ...`) -> boosts runbook/guide/procedure/troubleshooting content
+- location (`where is ...`) -> boosts index/home/reference pages
+- definition (`what is ...`) -> boosts overview/introduction/architecture pages
 
 Filter by space and limit results:
 

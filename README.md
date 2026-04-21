@@ -74,3 +74,6 @@ In the page, enter:
   - Bearer token
 
 The app sends requests from your local server process to Confluence over HTTPS.
+
+Search results now include a brief page summary generated from page content
+(with fallback to search excerpt when body content is unavailable).

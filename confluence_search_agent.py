@@ -25,7 +25,7 @@ class ConfluenceSearchError(RuntimeError):
 class SearchResult:
     title: str
     url: str
-    excerpt: str
+    summary: str
     space_key: str | None
     last_modified: str | None
 
@@ -155,6 +155,55 @@ class ConfluenceSearchAgent:
             return compact
         return f"{compact[:max_len]}..."
 
+    @staticmethod
+    def _summarize_text(text: str, *, max_len: int = 240) -> str:
+        compact = re.sub(r"\s+", " ", text or "").strip()
+        if not compact:
+            return ""
+        if len(compact) <= max_len:
+            return compact
+        clipped = compact[:max_len].rstrip()
+        if " " in clipped:
+            clipped = clipped.rsplit(" ", 1)[0]
+        return f"{clipped}..."
+
+    def _summary_from_search_entry(self, entry: dict[str, Any]) -> str:
+        content = entry.get("content", {})
+        body = content.get("body", {})
+        for body_key in ("view", "storage", "export_view"):
+            html_value = (body.get(body_key) or {}).get("value", "")
+            text = self._strip_html(html_value)
+            if text:
+                return self._summarize_text(text)
+
+        excerpt = self._strip_html(entry.get("excerpt", ""))
+        if excerpt:
+            return self._summarize_text(excerpt)
+        return ""
+
+    def _fetch_page_summary(self, api_root: str, page_id: str) -> str | None:
+        params = urlencode({"expand": "body.view"})
+        url = f"{api_root}/rest/api/content/{page_id}?{params}"
+        req = Request(url=url, headers=self._headers(), method="GET")
+        try:
+            with urlopen(req, timeout=self.timeout) as response:
+                payload = response.read()
+                content_type = response.headers.get("Content-Type", "")
+                data = self._parse_json_payload(
+                    payload,
+                    content_type=content_type,
+                    context=f"Confluence page {page_id} response",
+                )
+        except (HTTPError, URLError, ConfluenceSearchError):
+            return None
+
+        body = data.get("body", {})
+        html_value = (body.get("view") or {}).get("value", "")
+        text = self._strip_html(html_value)
+        if not text:
+            return None
+        return self._summarize_text(text)
+
     def _parse_json_payload(
         self,
         payload: bytes,
@@ -234,7 +283,7 @@ class ConfluenceSearchAgent:
                         f"Confluence search response JSON did not include a 'results' list. "
                         f"Payload snippet: {preview or '<empty>'}"
                     )
-                return self._parse_results(data)
+                return self._parse_results(data, api_root=api_root)
             except HTTPError as exc:
                 detail = self._extract_error_detail(exc)
                 attempt_errors.append(
@@ -278,10 +327,11 @@ class ConfluenceSearchAgent:
                 )
             return "No error detail provided."
 
-    def _parse_results(self, data: dict[str, Any]) -> list[SearchResult]:
+    def _parse_results(self, data: dict[str, Any], *, api_root: str) -> list[SearchResult]:
         items: list[SearchResult] = []
         top_links = data.get("_links", {})
         top_base = top_links.get("base", self.base_url)
+        summary_cache: dict[str, str] = {}
 
         for entry in data.get("results", []):
             content = entry.get("content", {})
@@ -289,12 +339,19 @@ class ConfluenceSearchAgent:
             base = links.get("base", top_base)
             webui = links.get("webui")
             page_url = urljoin(f"{base.rstrip('/')}/", webui.lstrip("/")) if webui else ""
+            summary = self._summary_from_search_entry(entry)
+            if not summary:
+                page_id = str(content.get("id") or "").strip()
+                if page_id:
+                    if page_id not in summary_cache:
+                        summary_cache[page_id] = self._fetch_page_summary(api_root, page_id) or ""
+                    summary = summary_cache[page_id]
 
             items.append(
                 SearchResult(
                     title=content.get("title") or entry.get("title") or "Untitled",
                     url=page_url,
-                    excerpt=self._strip_html(entry.get("excerpt", "")),
+                    summary=summary or "No summary available.",
                     space_key=(content.get("space") or {}).get("key"),
                     last_modified=(content.get("version") or {}).get("when"),
                 )
@@ -370,8 +427,8 @@ def print_results(results: list[SearchResult], as_json: bool) -> None:
             print(f"   Space: {item.space_key}")
         if item.last_modified:
             print(f"   Last Modified: {item.last_modified}")
-        if item.excerpt:
-            print(f"   Excerpt: {item.excerpt}")
+        if item.summary:
+            print(f"   Summary: {item.summary}")
         print()
 
 

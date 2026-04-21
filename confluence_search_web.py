@@ -169,10 +169,10 @@ INDEX_HTML = """<!doctype html>
           meta.textContent = bits.join(" | ");
           if (bits.length > 0) box.appendChild(meta);
 
-          if (item.excerpt) {
-            const excerpt = document.createElement("p");
-            excerpt.textContent = item.excerpt;
-            box.appendChild(excerpt);
+          if (item.summary) {
+            const summary = document.createElement("p");
+            summary.textContent = item.summary;
+            box.appendChild(summary);
           }
           resultsEl.appendChild(box);
         }

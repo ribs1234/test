@@ -36,6 +36,8 @@ Basic:
 python confluence_search_agent.py "incident runbook"
 ```
 
+Question-style queries are supported too (for example: `"where is the vault onboarding runbook?"`).
+
 Filter by space and limit results:
 
 ```bash

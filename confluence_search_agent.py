@@ -67,6 +67,13 @@ class SearchResult:
     last_modified: str | None
 
 
+@dataclass
+class QueryIntent:
+    original: str
+    search_phrase: str
+    keywords: list[str]
+
+
 class ConfluenceSearchAgent:
     """Minimal API client that searches Confluence pages by CQL."""
 
@@ -191,6 +198,102 @@ class ConfluenceSearchAgent:
         if len(compact) <= max_len:
             return compact
         return f"{compact[:max_len]}..."
+
+    @staticmethod
+    def _escape_cql_text(text: str) -> str:
+        return text.replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _query_intent(query: str) -> QueryIntent:
+        original = re.sub(r"\s+", " ", query or "").strip()
+        if not original:
+            return QueryIntent(original="", search_phrase="", keywords=[])
+
+        lower = original.lower()
+        for prefix in (
+            "how do i ",
+            "how can i ",
+            "how to ",
+            "where is ",
+            "where can i find ",
+            "what is ",
+            "who owns ",
+            "show me ",
+            "find me ",
+            "find ",
+            "looking for ",
+            "search for ",
+        ):
+            if lower.startswith(prefix):
+                original = original[len(prefix) :].strip()
+                break
+
+        search_phrase = original.rstrip(" ?.!")
+        token_source = re.sub(r"[^a-zA-Z0-9\s\-_/]", " ", search_phrase.lower())
+        raw_tokens = [token for token in token_source.split() if token]
+        stop_words = {
+            "a",
+            "an",
+            "the",
+            "and",
+            "or",
+            "for",
+            "to",
+            "of",
+            "in",
+            "on",
+            "at",
+            "by",
+            "with",
+            "from",
+            "about",
+            "into",
+            "is",
+            "are",
+            "be",
+            "this",
+            "that",
+            "these",
+            "those",
+            "i",
+            "me",
+            "my",
+            "we",
+            "our",
+            "us",
+            "you",
+            "your",
+            "it",
+            "its",
+            "can",
+            "do",
+            "does",
+            "did",
+            "please",
+            "page",
+            "pages",
+            "article",
+            "articles",
+            "doc",
+            "docs",
+            "documentation",
+            "confluence",
+        }
+
+        keywords: list[str] = []
+        for token in raw_tokens:
+            if len(token) < 3:
+                continue
+            if token in stop_words:
+                continue
+            if token not in keywords:
+                keywords.append(token)
+
+        return QueryIntent(
+            original=query.strip(),
+            search_phrase=search_phrase,
+            keywords=keywords[:8],
+        )
 
     @staticmethod
     def _summarize_text(text: str, *, max_len: int = 320) -> str:
@@ -340,11 +443,21 @@ class ConfluenceSearchAgent:
         limit: int = 10,
         space_key: str | None = None,
     ) -> list[SearchResult]:
-        if not query.strip():
+        intent = self._query_intent(query)
+        if not intent.search_phrase:
             return []
 
-        escaped_query = query.replace('"', '\\"')
-        cql_parts = ['type=page', f'text~"{escaped_query}"']
+        escaped_phrase = self._escape_cql_text(intent.search_phrase)
+        title_or_text_terms = [
+            f'title~"{escaped_phrase}"',
+            f'text~"{escaped_phrase}"',
+        ]
+        for keyword in intent.keywords:
+            escaped_keyword = self._escape_cql_text(keyword)
+            title_or_text_terms.append(f'title~"{escaped_keyword}"')
+            title_or_text_terms.append(f'text~"{escaped_keyword}"')
+
+        cql_parts = ["type=page", f"({' or '.join(title_or_text_terms)})"]
         if space_key:
             cql_parts.append(f'space="{space_key}"')
         cql = " and ".join(cql_parts)

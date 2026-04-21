@@ -49,6 +49,14 @@ class ConfluenceConversationAgent:
 
         self._apply_settings(settings)
         self._apply_inline_filters(text)
+        detail_idx = self._requested_result_index(text)
+        if detail_idx is not None:
+            return self._result_detail_turn(detail_idx)
+
+        compare_indices = self._requested_compare_indices(text)
+        if compare_indices is not None:
+            return self._compare_results_turn(compare_indices[0], compare_indices[1])
+
         if not self.state.base_url:
             return ConversationTurn(
                 reply="Set a Confluence Base URL before starting the conversation.",
@@ -63,10 +71,6 @@ class ConfluenceConversationAgent:
                 reply="Provide a Personal Access Token, or email + API token, to continue.",
                 results=[],
             )
-
-        detail_idx = self._requested_result_index(text)
-        if detail_idx is not None:
-            return self._result_detail_turn(detail_idx)
 
         if self._is_more_request(text):
             if not self.state.last_query:
@@ -166,6 +170,24 @@ class ConfluenceConversationAgent:
             return None
         return int(match.group(1))
 
+    @staticmethod
+    def _requested_compare_indices(text: str) -> tuple[int, int] | None:
+        if not re.search(r"\bcompare\b", text, re.IGNORECASE):
+            return None
+
+        explicit = re.search(
+            r"\bcompare\s+(?:result|#)?\s*(\d{1,2})\s*(?:and|vs\.?|versus|with)\s*(?:result|#)?\s*(\d{1,2})\b",
+            text,
+            re.IGNORECASE,
+        )
+        if explicit:
+            return int(explicit.group(1)), int(explicit.group(2))
+
+        matches = re.findall(r"(?:result|#)\s*(\d{1,2})", text, re.IGNORECASE)
+        if len(matches) >= 2:
+            return int(matches[0]), int(matches[1])
+        return None
+
     def _search_turn(self, query: str, *, from_more: bool) -> ConversationTurn:
         agent = ConfluenceSearchAgent(
             base_url=self.state.base_url,
@@ -224,6 +246,79 @@ class ConfluenceConversationAgent:
         if item.url:
             detail.append(f"Link: {item.url}")
         return ConversationTurn(reply=" ".join(detail), results=self.state.last_results)
+
+    @staticmethod
+    def _keywords_for_compare(text: str) -> set[str]:
+        tokens = {
+            token.lower()
+            for token in re.findall(r"[A-Za-z0-9]{3,}", text or "")
+        }
+        stop = {
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "from",
+            "into",
+            "about",
+            "result",
+            "page",
+            "summary",
+        }
+        return {token for token in tokens if token not in stop}
+
+    def _compare_results_turn(self, first_idx: int, second_idx: int) -> ConversationTurn:
+        if not self.state.last_results:
+            return ConversationTurn(
+                reply="No prior results are available yet. Ask a search question first.",
+                results=[],
+            )
+        max_idx = len(self.state.last_results)
+        if (
+            first_idx < 1
+            or second_idx < 1
+            or first_idx > max_idx
+            or second_idx > max_idx
+        ):
+            return ConversationTurn(
+                reply=(
+                    f"Comparison indices are out of range. "
+                    f"Available range is 1-{max_idx}."
+                ),
+                results=self.state.last_results,
+            )
+        if first_idx == second_idx:
+            return ConversationTurn(
+                reply="Please provide two different results to compare.",
+                results=self.state.last_results,
+            )
+
+        left = self.state.last_results[first_idx - 1]
+        right = self.state.last_results[second_idx - 1]
+
+        left_text = f"{left.title} {left.summary}"
+        right_text = f"{right.title} {right.summary}"
+        left_keywords = self._keywords_for_compare(left_text)
+        right_keywords = self._keywords_for_compare(right_text)
+        common = sorted(left_keywords & right_keywords)
+        left_only = sorted(left_keywords - right_keywords)
+        right_only = sorted(right_keywords - left_keywords)
+
+        common_text = ", ".join(common[:6]) if common else "no strong shared keywords"
+        left_only_text = ", ".join(left_only[:5]) if left_only else "no standout unique terms"
+        right_only_text = ", ".join(right_only[:5]) if right_only else "no standout unique terms"
+
+        reply = (
+            f"Comparison of result {first_idx} and result {second_idx}: "
+            f"Result {first_idx} is '{left.title}', and result {second_idx} is '{right.title}'. "
+            f"Common themes: {common_text}. "
+            f"Result {first_idx} unique focus: {left_only_text}. "
+            f"Result {second_idx} unique focus: {right_only_text}. "
+            "Ask for 'summarize result X' if you want deeper detail."
+        )
+        return ConversationTurn(reply=reply, results=self.state.last_results)
 
     @staticmethod
     def _intent_label(intent: QueryIntent) -> str:

@@ -244,6 +244,26 @@ INDEX_HTML = """<!doctype html>
         gap: 0.65rem;
         align-items: center;
       }
+      .chat-toolbar {
+        display: flex;
+        gap: 0.55rem;
+        flex-wrap: wrap;
+      }
+      .chat-toolbar button {
+        padding: 0.52rem 0.9rem;
+        font-size: 0.82rem;
+        border-radius: 999px;
+      }
+      .ghost-btn {
+        background: #eef2ff;
+        color: var(--exp-blue);
+        border: 1px solid #ced8ff;
+        box-shadow: none;
+      }
+      .ghost-btn:hover {
+        background: #e3ebff;
+        filter: none;
+      }
       .chat-form input {
         flex: 1;
       }
@@ -344,6 +364,10 @@ INDEX_HTML = """<!doctype html>
             />
             <button type="submit">Send</button>
           </form>
+          <div class="chat-toolbar">
+            <button type="button" id="clear-chat-btn" class="ghost-btn">Clear Conversation</button>
+            <button type="button" id="export-chat-btn" class="ghost-btn">Export Transcript</button>
+          </div>
           <span class="hint">Conversation remembers context in this browser session.</span>
         </div>
       </section>
@@ -369,6 +393,9 @@ INDEX_HTML = """<!doctype html>
       const chatLogEl = document.getElementById("chat-log");
       const chatFormEl = document.getElementById("chat-form");
       const chatMessageEl = document.getElementById("chat-message");
+      const clearChatBtnEl = document.getElementById("clear-chat-btn");
+      const exportChatBtnEl = document.getElementById("export-chat-btn");
+      const chatTranscript = [];
 
       function status(message, isError = false) {
         statusEl.textContent = message;
@@ -391,6 +418,11 @@ INDEX_HTML = """<!doctype html>
         bubble.textContent = text;
         chatLogEl.appendChild(bubble);
         chatLogEl.scrollTop = chatLogEl.scrollHeight;
+        chatTranscript.push({
+          role,
+          text,
+          ts: new Date().toISOString(),
+        });
       }
 
       function currentSettings() {
@@ -511,6 +543,50 @@ INDEX_HTML = """<!doctype html>
         } finally {
           setLoading(false);
         }
+      });
+
+      clearChatBtnEl.addEventListener("click", async () => {
+        setLoading(true);
+        try {
+          const response = await fetch("/api/chat/clear", { method: "POST" });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || "Could not clear conversation.");
+          }
+          chatLogEl.textContent = "";
+          chatTranscript.length = 0;
+          resultsEl.textContent = "";
+          appendChatBubble("assistant", data.reply || "Conversation cleared.");
+          status("Conversation cleared.");
+        } catch (err) {
+          status(err.message || "Could not clear conversation.", true);
+        } finally {
+          setLoading(false);
+        }
+      });
+
+      exportChatBtnEl.addEventListener("click", () => {
+        if (!chatTranscript.length) {
+          status("No transcript to export yet.", true);
+          return;
+        }
+        const exportPayload = {
+          exported_at: new Date().toISOString(),
+          transcript: chatTranscript,
+        };
+        const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        a.href = url;
+        a.download = `confluence-conversation-${stamp}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        status("Transcript exported.");
       });
 
       appendChatBubble(

@@ -92,8 +92,13 @@ The web app includes a conversation panel that keeps session context and support
 - Ask a natural question (example: `who owns vault oncall?`)
 - Follow up with:
   - `summarize result 2`
+  - `compare result 1 and 3`
   - `show more`
   - `again`
   - `in ENG space ...` or `clear space filter`
+
+- Conversation controls:
+  - **Clear Conversation** resets the in-session chat state and prior results
+  - **Export Transcript** downloads the full chat transcript as a `.txt` file
 
 Conversation state is stored per browser session (via local server session cookie) and used only for this local app runtime.

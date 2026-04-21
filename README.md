@@ -16,10 +16,12 @@ Small Python tools for searching Confluence pages by query using the Confluence 
 
 Use one of the following:
 
-1. **Email + API token** (recommended for Atlassian Cloud):
+1. **Personal Access Token (PAT)** (recommended):
+   - `CONFLUENCE_PAT`
+2. **Email + API token**:
    - `CONFLUENCE_EMAIL`
    - `CONFLUENCE_API_TOKEN`
-2. **Bearer token**:
+3. **Bearer token**:
    - `CONFLUENCE_BEARER_TOKEN`
 
 Always set:
@@ -46,7 +48,7 @@ JSON output:
 python confluence_search_agent.py "incident runbook" --json
 ```
 
-You can also pass credentials and URL as flags (`--base-url`, `--email`, `--api-token`, `--bearer-token`), but environment variables are simpler for local usage.
+You can also pass credentials and URL as flags (`--base-url`, `--pat`, `--email`, `--api-token`, `--bearer-token`), but environment variables are simpler for local usage.
 
 ## Local Web UI (localhost)
 
@@ -67,32 +69,8 @@ In the page, enter:
 - Query text
 - Optional space key / limit
 - Auth:
-  - **Okta sign-in (OAuth PKCE)**, or
+  - **Personal Access Token (PAT)**, or
   - Email + API token, or
   - Bearer token
 
 The app sends requests from your local server process to Confluence over HTTPS.
-
-### Okta OAuth setup
-
-If your org uses Okta for auth, configure this environment variable before starting the web app:
-
-```bash
-export OKTA_ISSUER="https://your-okta-domain/oauth2/default"
-export OKTA_CLIENT_ID="your_okta_oidc_client_id"
-```
-
-Then run:
-
-```bash
-python3 confluence_search_web.py --host 127.0.0.1 --port 8000
-```
-
-In the UI:
-1. click **Sign in with Okta**
-2. enter your **Okta username** in the Okta section
-3. complete login in Okta
-4. return to app and search Confluence (token is used automatically)
-
-Notes:
-- Your Okta app must allow redirect URI: `http://127.0.0.1:8000/auth/okta/callback`

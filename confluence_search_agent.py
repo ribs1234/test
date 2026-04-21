@@ -38,6 +38,7 @@ class ConfluenceSearchAgent:
         base_url: str,
         email: str | None = None,
         api_token: str | None = None,
+        personal_access_token: str | None = None,
         bearer_token: str | None = None,
         timeout: int = 20,
     ) -> None:
@@ -47,12 +48,14 @@ class ConfluenceSearchAgent:
         self.api_root = self._normalize_api_root(base_url)
         self.email = email
         self.api_token = api_token
+        self.personal_access_token = personal_access_token
         self.bearer_token = bearer_token
         self.timeout = timeout
 
-        if not bearer_token and not (email and api_token):
+        has_bearer_auth = bool(personal_access_token or bearer_token)
+        if not has_bearer_auth and not (email and api_token):
             raise ValueError(
-                "Authentication required: set bearer token or email + API token."
+                "Authentication required: set personal access token, bearer token, or email + API token."
             )
 
     @staticmethod
@@ -70,8 +73,9 @@ class ConfluenceSearchAgent:
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json"}
-        if self.bearer_token:
-            headers["Authorization"] = f"Bearer {self.bearer_token}"
+        bearer = self.personal_access_token or self.bearer_token
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
             return headers
 
         raw = f"{self.email}:{self.api_token}".encode("utf-8")
@@ -177,6 +181,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Confluence API token (or set CONFLUENCE_API_TOKEN)",
     )
     parser.add_argument(
+        "--personal-access-token",
+        default=(
+            os.getenv("CONFLUENCE_PERSONAL_ACCESS_TOKEN")
+            or os.getenv("CONFLUENCE_PAT")
+        ),
+        help=(
+            "Confluence personal access token "
+            "(or set CONFLUENCE_PERSONAL_ACCESS_TOKEN / CONFLUENCE_PAT)"
+        ),
+    )
+    parser.add_argument(
         "--bearer-token",
         default=os.getenv("CONFLUENCE_BEARER_TOKEN"),
         help="Bearer token auth (or set CONFLUENCE_BEARER_TOKEN)",
@@ -224,6 +239,7 @@ def main(argv: list[str]) -> int:
             base_url=args.base_url,
             email=args.email,
             api_token=args.api_token,
+            personal_access_token=args.personal_access_token,
             bearer_token=args.bearer_token,
             timeout=args.timeout,
         )

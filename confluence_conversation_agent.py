@@ -210,17 +210,52 @@ class ConfluenceConversationAgent:
                 results=[],
             )
 
-        top_titles = ", ".join(item.title for item in results[:3])
         mode = "I fetched additional matches. " if from_more else ""
+        answer = self._answer_from_results(intent, results)
+        result_summary = self._summarize_result_set(results)
         return ConversationTurn(
             reply=(
-                f"{mode}I found {len(results)} page(s){scope} for '{query}'. "
-                f"Detected intent: {self._intent_label(intent)}. "
-                f"Top matches: {top_titles}. "
+                f"{mode}Answer: {answer} "
+                f"Result summary: {result_summary} "
+                f"I found {len(results)} page(s){scope} for '{query}' "
+                f"(intent: {self._intent_label(intent)}). "
                 "You can ask 'summarize result 2' or 'show more'."
             ),
             results=results,
         )
+
+    @staticmethod
+    def _shorten(text: str, *, max_len: int = 180) -> str:
+        compact = re.sub(r"\s+", " ", text or "").strip()
+        if len(compact) <= max_len:
+            return compact
+        clipped = compact[:max_len].rstrip()
+        if " " in clipped:
+            clipped = clipped.rsplit(" ", 1)[0]
+        return f"{clipped}..."
+
+    def _answer_from_results(self, intent: QueryIntent, results: list[SearchResult]) -> str:
+        best = results[0]
+        best_summary = self._shorten(best.summary, max_len=210)
+        if intent.intent_label == "ownership":
+            return (
+                f"The most likely owner/responsibility info is in '{best.title}': "
+                f"{best_summary}"
+            )
+        if intent.intent_label == "how_to":
+            return f"The best procedure-oriented answer appears in '{best.title}': {best_summary}"
+        if intent.intent_label == "location":
+            return f"The most likely page you are looking for is '{best.title}': {best_summary}"
+        if intent.intent_label == "definition":
+            return f"The clearest definition/overview is in '{best.title}': {best_summary}"
+        return f"The strongest match is '{best.title}': {best_summary}"
+
+    def _summarize_result_set(self, results: list[SearchResult], *, max_items: int = 3) -> str:
+        parts: list[str] = []
+        for idx, item in enumerate(results[:max_items], start=1):
+            snippet = self._shorten(item.summary, max_len=110)
+            parts.append(f"{idx}) {item.title} - {snippet}")
+        return " ".join(parts)
 
     def _result_detail_turn(self, index: int) -> ConversationTurn:
         if not self.state.last_results:

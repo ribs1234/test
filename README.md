@@ -48,7 +48,7 @@ JSON output:
 python confluence_search_agent.py "incident runbook" --json
 ```
 
-You can also pass credentials and URL as flags (`--base-url`, `--pat`, `--email`, `--api-token`, `--bearer-token`), but environment variables are simpler for local usage.
+You can also pass credentials and URL as flags (`--base-url`, `--personal-access-token`, `--email`, `--api-token`, `--bearer-token`), but environment variables are simpler for local usage.
 
 ## Local Web UI (localhost)
 
@@ -75,5 +75,4 @@ In the page, enter:
 
 The app sends requests from your local server process to Confluence over HTTPS.
 
-Search results now include a brief page summary generated from page content
-(with fallback to search excerpt when body content is unavailable).
+Search results include an AI-style summary generated from page content (no search snippet output).

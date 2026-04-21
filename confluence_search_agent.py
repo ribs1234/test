@@ -16,6 +16,43 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
+COMMON_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "has",
+    "he",
+    "in",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "that",
+    "the",
+    "to",
+    "was",
+    "were",
+    "will",
+    "with",
+    "this",
+    "these",
+    "those",
+    "or",
+    "if",
+    "we",
+    "you",
+    "your",
+    "our",
+}
+
 
 class ConfluenceSearchError(RuntimeError):
     """Raised when Confluence search fails."""
@@ -156,7 +193,7 @@ class ConfluenceSearchAgent:
         return f"{compact[:max_len]}..."
 
     @staticmethod
-    def _summarize_text(text: str, *, max_len: int = 240) -> str:
+    def _summarize_text(text: str, *, max_len: int = 320) -> str:
         compact = re.sub(r"\s+", " ", text or "").strip()
         if not compact:
             return ""
@@ -167,21 +204,77 @@ class ConfluenceSearchAgent:
             clipped = clipped.rsplit(" ", 1)[0]
         return f"{clipped}..."
 
-    def _summary_from_search_entry(self, entry: dict[str, Any]) -> str:
+    @staticmethod
+    def _sentence_split(text: str) -> list[str]:
+        return [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", text)
+            if sentence and sentence.strip()
+        ]
+
+    @staticmethod
+    def _tokenize_words(text: str) -> list[str]:
+        return [word.lower() for word in re.findall(r"[A-Za-z0-9']+", text)]
+
+    def _ai_generate_summary(self, text: str, *, query: str) -> str:
+        clean = re.sub(r"\s+", " ", text or "").strip()
+        if not clean:
+            return ""
+
+        sentences = self._sentence_split(clean)
+        if not sentences:
+            return self._summarize_text(clean)
+
+        query_terms = {
+            token
+            for token in self._tokenize_words(query)
+            if token not in COMMON_STOPWORDS and len(token) > 1
+        }
+        doc_words = [
+            token
+            for token in self._tokenize_words(clean)
+            if token not in COMMON_STOPWORDS and len(token) > 1
+        ]
+        word_freq: dict[str, int] = {}
+        for token in doc_words:
+            word_freq[token] = word_freq.get(token, 0) + 1
+
+        scored: list[tuple[int, float, str]] = []
+        for idx, sentence in enumerate(sentences):
+            sentence_words = [
+                token
+                for token in self._tokenize_words(sentence)
+                if token not in COMMON_STOPWORDS and len(token) > 1
+            ]
+            if not sentence_words:
+                continue
+            frequency_score = sum(word_freq.get(token, 0) for token in sentence_words)
+            query_boost = sum(2.0 for token in sentence_words if token in query_terms)
+            normalized_score = (frequency_score + query_boost) / max(
+                len(sentence_words), 1
+            )
+            scored.append((idx, normalized_score, sentence.strip()))
+
+        if not scored:
+            return self._summarize_text(sentences[0])
+
+        top_count = 2 if len(scored) > 1 else 1
+        top_ranked = sorted(scored, key=lambda item: item[1], reverse=True)[:top_count]
+        ordered = [item[2] for item in sorted(top_ranked, key=lambda item: item[0])]
+        summary = " ".join(ordered)
+        return self._summarize_text(summary)
+
+    def _body_text_from_search_entry(self, entry: dict[str, Any]) -> str:
         content = entry.get("content", {})
         body = content.get("body", {})
         for body_key in ("view", "storage", "export_view"):
             html_value = (body.get(body_key) or {}).get("value", "")
             text = self._strip_html(html_value)
             if text:
-                return self._summarize_text(text)
-
-        excerpt = self._strip_html(entry.get("excerpt", ""))
-        if excerpt:
-            return self._summarize_text(excerpt)
+                return text
         return ""
 
-    def _fetch_page_summary(self, api_root: str, page_id: str) -> str | None:
+    def _fetch_page_summary(self, api_root: str, page_id: str, *, query: str) -> str | None:
         params = urlencode({"expand": "body.view"})
         url = f"{api_root}/rest/api/content/{page_id}?{params}"
         req = Request(url=url, headers=self._headers(), method="GET")
@@ -202,7 +295,7 @@ class ConfluenceSearchAgent:
         text = self._strip_html(html_value)
         if not text:
             return None
-        return self._summarize_text(text)
+        return self._ai_generate_summary(text, query=query)
 
     def _parse_json_payload(
         self,
@@ -260,7 +353,7 @@ class ConfluenceSearchAgent:
             {
                 "cql": cql,
                 "limit": str(limit),
-                "expand": "content.space,content.version",
+                "expand": "content.space,content.version,content.body.view",
             }
         )
         attempt_errors: list[str] = []
@@ -283,7 +376,7 @@ class ConfluenceSearchAgent:
                         f"Confluence search response JSON did not include a 'results' list. "
                         f"Payload snippet: {preview or '<empty>'}"
                     )
-                return self._parse_results(data, api_root=api_root)
+                return self._parse_results(data, api_root=api_root, query=query)
             except HTTPError as exc:
                 detail = self._extract_error_detail(exc)
                 attempt_errors.append(
@@ -327,7 +420,9 @@ class ConfluenceSearchAgent:
                 )
             return "No error detail provided."
 
-    def _parse_results(self, data: dict[str, Any], *, api_root: str) -> list[SearchResult]:
+    def _parse_results(
+        self, data: dict[str, Any], *, api_root: str, query: str
+    ) -> list[SearchResult]:
         items: list[SearchResult] = []
         top_links = data.get("_links", {})
         top_base = top_links.get("base", self.base_url)
@@ -339,19 +434,26 @@ class ConfluenceSearchAgent:
             base = links.get("base", top_base)
             webui = links.get("webui")
             page_url = urljoin(f"{base.rstrip('/')}/", webui.lstrip("/")) if webui else ""
-            summary = self._summary_from_search_entry(entry)
+            summary = self._ai_generate_summary(
+                self._body_text_from_search_entry(entry),
+                query=query,
+            )
             if not summary:
                 page_id = str(content.get("id") or "").strip()
                 if page_id:
                     if page_id not in summary_cache:
-                        summary_cache[page_id] = self._fetch_page_summary(api_root, page_id) or ""
+                        summary_cache[page_id] = (
+                            self._fetch_page_summary(api_root, page_id, query=query)
+                            or ""
+                        )
                     summary = summary_cache[page_id]
 
             items.append(
                 SearchResult(
                     title=content.get("title") or entry.get("title") or "Untitled",
                     url=page_url,
-                    summary=summary or "No summary available.",
+                    summary=summary
+                    or "No readable page content available for AI summary.",
                     space_key=(content.get("space") or {}).get("key"),
                     last_modified=(content.get("version") or {}).get("when"),
                 )

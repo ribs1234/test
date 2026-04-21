@@ -19,111 +19,209 @@ INDEX_HTML = """<!doctype html>
     <title>Confluence Search</title>
     <style>
       :root {
-        color-scheme: light dark;
-        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+        --exp-blue: #002f87;
+        --exp-cyan: #00a3e0;
+        --exp-violet: #4d148c;
+        --surface: #ffffff;
+        --surface-soft: #f5f8ff;
+        --text: #0e1735;
+        --muted: #4a5680;
+        --border: #d7dff4;
+        --shadow: 0 12px 32px rgba(9, 28, 82, 0.16);
+        font-family: "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       }
       body {
         margin: 0;
-        padding: 2rem;
-        max-width: 900px;
-        margin-inline: auto;
+        min-height: 100vh;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 18% 18%, rgba(0, 163, 224, 0.45), transparent 40%),
+          radial-gradient(circle at 82% 20%, rgba(77, 20, 140, 0.35), transparent 40%),
+          linear-gradient(140deg, #00184d 0%, #002f87 45%, #0646b9 100%);
       }
-      h1 { margin-top: 0; }
+      .shell {
+        max-width: 1060px;
+        margin: 0 auto;
+        padding: 2.5rem 1.5rem 3rem;
+      }
+      .hero {
+        margin-bottom: 1.25rem;
+        color: #f3f7ff;
+      }
+      h1 {
+        margin: 0;
+        font-size: 2rem;
+        font-weight: 700;
+      }
+      .hero p {
+        margin: 0.6rem 0 0;
+        max-width: 68ch;
+        color: #d7e4ff;
+      }
+      .panel {
+        background: var(--surface);
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.55);
+        box-shadow: var(--shadow);
+        padding: 1.15rem 1.15rem 1.25rem;
+        margin-bottom: 1rem;
+      }
       form {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 0.75rem;
-        margin-bottom: 1rem;
+        gap: 0.9rem 1rem;
+        margin: 0;
       }
       .full { grid-column: 1 / -1; }
       label {
         display: flex;
         flex-direction: column;
-        font-size: 0.9rem;
-        gap: 0.25rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        color: var(--muted);
+        gap: 0.4rem;
       }
-      input, button {
-        padding: 0.55rem 0.6rem;
+      input {
+        border: 1px solid var(--border);
+        background: var(--surface-soft);
+        color: var(--text);
+        border-radius: 10px;
+        padding: 0.68rem 0.72rem;
         font-size: 0.95rem;
+        outline: none;
+      }
+      input:focus {
+        border-color: var(--exp-cyan);
+        box-shadow: 0 0 0 3px rgba(0, 163, 224, 0.18);
+      }
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 0.8rem;
       }
       button {
-        width: fit-content;
+        border: 0;
+        border-radius: 999px;
+        padding: 0.72rem 1.2rem;
+        font-size: 0.94rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        color: white;
+        background: linear-gradient(100deg, var(--exp-blue), var(--exp-violet));
+        box-shadow: 0 8px 20px rgba(18, 48, 122, 0.28);
+      }
+      button:hover {
+        filter: brightness(1.04);
+      }
+      button {
         cursor: pointer;
       }
       .hint {
-        font-size: 0.85rem;
-        opacity: 0.8;
+        font-size: 0.82rem;
+        color: var(--muted);
       }
       #status {
-        min-height: 1.25rem;
-        margin: 0.5rem 0 1rem;
+        min-height: 1.3rem;
+        margin: 0.4rem 0 0;
+        font-weight: 600;
+      }
+      #results {
+        display: grid;
+        gap: 0.85rem;
       }
       .result {
-        border: 1px solid #8a8a8a66;
-        border-radius: 8px;
-        padding: 0.9rem;
-        margin-bottom: 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 1rem;
+        background: white;
+        box-shadow: 0 4px 14px rgba(7, 23, 64, 0.06);
       }
       .result h3 {
-        margin: 0 0 0.4rem;
+        margin: 0;
+        font-size: 1.05rem;
+      }
+      .result a {
+        color: var(--exp-blue);
+        text-decoration: none;
+      }
+      .result a:hover {
+        text-decoration: underline;
       }
       .meta {
-        font-size: 0.82rem;
-        opacity: 0.85;
-        margin-bottom: 0.45rem;
+        margin: 0.45rem 0 0.5rem;
+        font-size: 0.8rem;
+        color: var(--muted);
       }
-      code {
-        padding: 0.1rem 0.3rem;
-        border-radius: 4px;
-        background: #8883;
+      .summary {
+        margin: 0;
+        color: var(--text);
+        line-height: 1.5;
+      }
+      @media (max-width: 760px) {
+        form {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
   <body>
-    <h1>Confluence Search (Localhost)</h1>
-    <p class="hint">
-      Enter your Confluence web address and personal access token, then search by text.
-    </p>
+    <main class="shell">
+      <header class="hero">
+        <h1>Confluence Intelligence Search</h1>
+        <p>
+          Search your Confluence knowledge base and get concise AI-generated summaries
+          of each matching page.
+        </p>
+      </header>
 
-    <form id="search-form">
-      <label class="full">
-        Confluence Base URL
-        <input id="base-url" name="base_url" placeholder="https://your-domain.atlassian.net" required />
-      </label>
+      <section class="panel">
+        <form id="search-form">
+          <label class="full">
+            Confluence Base URL
+            <input id="base-url" name="base_url" placeholder="https://your-domain.atlassian.net" required />
+          </label>
 
-      <label class="full">
-        Personal Access Token (recommended)
-        <input id="personal-access-token" name="personal_access_token" type="password" />
-      </label>
+          <label class="full">
+            Personal Access Token (recommended)
+            <input id="personal-access-token" name="personal_access_token" type="password" />
+          </label>
 
-      <label>
-        Email (optional fallback for API token auth)
-        <input id="email" name="email" placeholder="you@company.com" />
-      </label>
-      <label>
-        API Token (optional fallback)
-        <input id="api-token" name="api_token" type="password" />
-      </label>
+          <label>
+            Email (optional fallback for API token auth)
+            <input id="email" name="email" placeholder="you@company.com" />
+          </label>
+          <label>
+            API Token (optional fallback)
+            <input id="api-token" name="api_token" type="password" />
+          </label>
 
-      <label class="full">
-        Query
-        <input id="query" name="query" placeholder="incident runbook" required />
-      </label>
+          <label class="full">
+            Search Query
+            <input id="query" name="query" placeholder="vault rotation runbook" required />
+          </label>
 
-      <label>
-        Space Key (optional)
-        <input id="space-key" name="space_key" placeholder="ENG" />
-      </label>
-      <label>
-        Limit
-        <input id="limit" name="limit" type="number" min="1" max="50" value="10" />
-      </label>
+          <label>
+            Space Key (optional)
+            <input id="space-key" name="space_key" placeholder="ENG" />
+          </label>
+          <label>
+            Limit
+            <input id="limit" name="limit" type="number" min="1" max="50" value="10" />
+          </label>
 
-      <button type="submit" class="full">Search Confluence</button>
-    </form>
+          <div class="actions full">
+            <button type="submit">Search Confluence</button>
+            <span class="hint">Credentials are used only for live API calls and not persisted.</span>
+          </div>
+        </form>
+      </section>
 
-    <div id="status" aria-live="polite"></div>
-    <div id="results"></div>
+      <section class="panel">
+        <div id="status" aria-live="polite"></div>
+        <div id="results"></div>
+      </section>
+    </main>
 
     <script>
       const form = document.getElementById("search-form");
@@ -171,6 +269,7 @@ INDEX_HTML = """<!doctype html>
 
           if (item.summary) {
             const summary = document.createElement("p");
+            summary.className = "summary";
             summary.textContent = item.summary;
             box.appendChild(summary);
           }

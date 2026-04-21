@@ -139,6 +139,34 @@ INDEX_HTML = """<!doctype html>
         margin: 0.4rem 0 0;
         font-weight: 600;
       }
+      .loading-wrap {
+        display: none;
+        align-items: center;
+        gap: 0.8rem;
+        margin-top: 0.65rem;
+        padding: 0.6rem 0.75rem;
+        border-radius: 10px;
+        background: linear-gradient(
+          90deg,
+          rgba(0, 47, 135, 0.08),
+          rgba(77, 20, 140, 0.08)
+        );
+      }
+      .loading-wrap.active {
+        display: inline-flex;
+      }
+      .loading-wrap img {
+        width: 52px;
+        height: 52px;
+        object-fit: cover;
+        border-radius: 8px;
+        border: 1px solid rgba(0, 47, 135, 0.2);
+      }
+      .loading-wrap span {
+        color: var(--muted);
+        font-size: 0.9rem;
+        font-weight: 600;
+      }
       #results {
         display: grid;
         gap: 0.85rem;
@@ -253,6 +281,13 @@ INDEX_HTML = """<!doctype html>
 
       <section class="panel">
         <div id="status" aria-live="polite"></div>
+        <div id="loading-indicator" class="loading-wrap" aria-hidden="true">
+          <img
+            src="https://i.makeagif.com/media/8-01-2019/lreogQ.gif"
+            alt="Sonic the Hedgehog waiting while search runs"
+          />
+          <span>Sonic is waiting while we search Confluence...</span>
+        </div>
         <div id="results"></div>
       </section>
     </main>
@@ -260,11 +295,22 @@ INDEX_HTML = """<!doctype html>
     <script>
       const form = document.getElementById("search-form");
       const statusEl = document.getElementById("status");
+      const loadingEl = document.getElementById("loading-indicator");
       const resultsEl = document.getElementById("results");
 
       function status(message, isError = false) {
         statusEl.textContent = message;
         statusEl.style.color = isError ? "crimson" : "";
+      }
+
+      function setLoading(isLoading) {
+        if (isLoading) {
+          loadingEl.classList.add("active");
+          loadingEl.setAttribute("aria-hidden", "false");
+          return;
+        }
+        loadingEl.classList.remove("active");
+        loadingEl.setAttribute("aria-hidden", "true");
       }
 
       function renderResults(items) {
@@ -314,6 +360,7 @@ INDEX_HTML = """<!doctype html>
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         status("Searching...");
+        setLoading(true);
         resultsEl.textContent = "";
 
         const payload = {
@@ -340,6 +387,8 @@ INDEX_HTML = """<!doctype html>
           renderResults(data.results);
         } catch (err) {
           status(err.message || "Search failed.", true);
+        } finally {
+          setLoading(false);
         }
       });
     </script>

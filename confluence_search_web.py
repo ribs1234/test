@@ -239,6 +239,14 @@ INDEX_HTML = """<!doctype html>
         background: rgba(77, 20, 140, 0.08);
         border: 1px solid rgba(77, 20, 140, 0.2);
       }
+      .bubble.assistant a {
+        color: var(--exp-blue);
+        font-weight: 600;
+        text-decoration: underline;
+      }
+      .bubble.assistant a:hover {
+        color: var(--exp-violet);
+      }
       .chat-form {
         display: flex;
         gap: 0.65rem;
@@ -415,13 +423,39 @@ INDEX_HTML = """<!doctype html>
       function appendChatBubble(role, text) {
         const bubble = document.createElement("div");
         bubble.className = "bubble " + role;
-        bubble.textContent = text;
+        if (role === "assistant") {
+          bubble.innerHTML = linkifyText(text);
+        } else {
+          bubble.textContent = text;
+        }
         chatLogEl.appendChild(bubble);
         chatLogEl.scrollTop = chatLogEl.scrollHeight;
         chatTranscript.push({
           role,
           text,
           ts: new Date().toISOString(),
+        });
+      }
+
+      function escapeHtml(text) {
+        return String(text || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function linkifyText(text) {
+        const escaped = escapeHtml(text);
+        return escaped.replace(/https?:\\/\\/[^\\s<>"']+/g, (rawUrl) => {
+          let url = rawUrl;
+          let trailing = "";
+          while (url && /[).,!?]$/.test(url)) {
+            trailing = url.slice(-1) + trailing;
+            url = url.slice(0, -1);
+          }
+          return `<a href="${url}" target="_blank" rel="noreferrer noopener">${url}</a>${trailing}`;
         });
       }
 

@@ -45,7 +45,7 @@ class ConfluenceSearchAgent:
         if not base_url:
             raise ValueError("base_url is required")
         self.base_url = base_url.rstrip("/")
-        self.api_root = self._normalize_api_root(base_url)
+        self.api_roots = self._candidate_api_roots(base_url)
         self.email = email
         self.api_token = api_token
         self.personal_access_token = personal_access_token
@@ -59,11 +59,23 @@ class ConfluenceSearchAgent:
             )
 
     @staticmethod
-    def _normalize_api_root(base_url: str) -> str:
+    def _candidate_api_roots(base_url: str) -> list[str]:
         trimmed = base_url.rstrip("/")
+        candidates: list[str] = []
         if trimmed.endswith("/wiki"):
-            return trimmed
-        return f"{trimmed}/wiki"
+            candidates.append(trimmed)
+            without_wiki = trimmed[: -len("/wiki")].rstrip("/")
+            if without_wiki:
+                candidates.append(without_wiki)
+        else:
+            candidates.append(f"{trimmed}/wiki")
+            candidates.append(trimmed)
+
+        unique: list[str] = []
+        for candidate in candidates:
+            if candidate and candidate not in unique:
+                unique.append(candidate)
+        return unique
 
     @staticmethod
     def _strip_html(text: str) -> str:
@@ -107,6 +119,14 @@ class ConfluenceSearchAgent:
         context: str,
     ) -> dict[str, Any]:
         text = self._decode_body(payload, content_type).lstrip("\ufeff").strip()
+        lower_text = text[:200].lower()
+        if "text/html" in (content_type or "").lower() or lower_text.startswith("<html") or lower_text.startswith("<!doctype html"):
+            snippet = self._one_line_snippet(text)
+            raise ConfluenceSearchError(
+                f"{context} returned HTML instead of JSON (content-type: {content_type or 'unknown'}). "
+                f"Response snippet: {snippet or '<empty>'}. "
+                "This usually means authentication/SSO intercepted the API call."
+            )
         if text.startswith(")]}',"):
             text = text[5:].lstrip()
         elif text.startswith(")]}'"):
@@ -150,32 +170,49 @@ class ConfluenceSearchAgent:
                 "expand": "content.space,content.version",
             }
         )
-        url = f"{self.api_root}/rest/api/search?{params}"
-        req = Request(url=url, headers=self._headers(), method="GET")
+        attempt_errors: list[str] = []
+        for api_root in self.api_roots:
+            url = f"{api_root}/rest/api/search?{params}"
+            req = Request(url=url, headers=self._headers(), method="GET")
 
-        try:
-            with urlopen(req, timeout=self.timeout) as response:
-                payload = response.read()
-                content_type = response.headers.get("Content-Type", "")
-                data = self._parse_json_payload(
-                    payload,
-                    content_type=content_type,
-                    context="Confluence search response",
+            try:
+                with urlopen(req, timeout=self.timeout) as response:
+                    payload = response.read()
+                    content_type = response.headers.get("Content-Type", "")
+                    data = self._parse_json_payload(
+                        payload,
+                        content_type=content_type,
+                        context="Confluence search response",
+                    )
+                if not isinstance(data.get("results"), list):
+                    preview = self._one_line_snippet(json.dumps(data))
+                    raise ConfluenceSearchError(
+                        f"Confluence search response JSON did not include a 'results' list. "
+                        f"Payload snippet: {preview or '<empty>'}"
+                    )
+                return self._parse_results(data)
+            except HTTPError as exc:
+                detail = self._extract_error_detail(exc)
+                attempt_errors.append(
+                    f"{url} -> HTTP {exc.code}: {detail}"
                 )
-        except HTTPError as exc:
-            detail = self._extract_error_detail(exc)
-            raise ConfluenceSearchError(
-                f"Confluence request failed ({exc.code}): {detail}"
-            ) from exc
-        except URLError as exc:
-            raise ConfluenceSearchError(f"Could not connect to Confluence: {exc}") from exc
+            except URLError as exc:
+                attempt_errors.append(f"{url} -> network error: {exc}")
+            except ConfluenceSearchError as exc:
+                attempt_errors.append(f"{url} -> {exc}")
 
-        return self._parse_results(data)
+        joined_errors = " | ".join(attempt_errors)
+        raise ConfluenceSearchError(
+            "All Confluence API path attempts failed. "
+            f"Tried: {', '.join(self.api_roots)}. "
+            f"Details: {joined_errors}. "
+            "Verify base URL and PAT scope/permissions."
+        )
 
     def _extract_error_detail(self, error: HTTPError) -> str:
+        raw = error.read()
+        content_type = error.headers.get("Content-Type", "") if error.headers else ""
         try:
-            raw = error.read()
-            content_type = error.headers.get("Content-Type", "") if error.headers else ""
             parsed = self._parse_json_payload(
                 raw,
                 content_type=content_type,
@@ -185,19 +222,16 @@ class ConfluenceSearchAgent:
                 if key in parsed and parsed[key]:
                     return str(parsed[key])
             return self._one_line_snippet(json.dumps(parsed)) or "No error detail provided."
+        except ConfluenceSearchError as exc:
+            return str(exc)
         except Exception:
-            try:
-                raw = error.read()
-                content_type = error.headers.get("Content-Type", "") if error.headers else ""
-                text = self._decode_body(raw, content_type)
-                snippet = self._one_line_snippet(text)
-                if snippet:
-                    return (
-                        f"Non-JSON error response (content-type: {content_type or 'unknown'}): "
-                        f"{snippet}"
-                    )
-            except Exception:
-                pass
+            text = self._decode_body(raw, content_type)
+            snippet = self._one_line_snippet(text)
+            if snippet:
+                return (
+                    f"Non-JSON error response (content-type: {content_type or 'unknown'}): "
+                    f"{snippet}"
+                )
             return "No error detail provided."
 
     def _parse_results(self, data: dict[str, Any]) -> list[SearchResult]:

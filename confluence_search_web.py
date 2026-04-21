@@ -38,11 +38,24 @@ INDEX_HTML = """<!doctype html>
           radial-gradient(circle at 18% 18%, rgba(0, 163, 224, 0.45), transparent 40%),
           radial-gradient(circle at 82% 20%, rgba(77, 20, 140, 0.35), transparent 40%),
           linear-gradient(140deg, #00184d 0%, #002f87 45%, #0646b9 100%);
+        position: relative;
+      }
+      .bg-logo {
+        position: fixed;
+        right: clamp(1rem, 3vw, 2rem);
+        bottom: clamp(1rem, 3vw, 2rem);
+        width: min(46vw, 520px);
+        height: auto;
+        opacity: 0.13;
+        pointer-events: none;
+        z-index: 0;
       }
       .shell {
         max-width: 1060px;
         margin: 0 auto;
         padding: 2.5rem 1.5rem 3rem;
+        position: relative;
+        z-index: 1;
       }
       .hero {
         margin-bottom: 1.25rem;
@@ -166,6 +179,27 @@ INDEX_HTML = """<!doctype html>
     </style>
   </head>
   <body>
+    <svg class="bg-logo" viewBox="0 0 640 200" aria-hidden="true">
+      <defs>
+        <linearGradient id="expLogoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#ffffff" />
+          <stop offset="100%" stop-color="#d7e4ff" />
+        </linearGradient>
+      </defs>
+      <text
+        x="18"
+        y="130"
+        font-family="Inter, Segoe UI, Arial, sans-serif"
+        font-size="92"
+        font-weight="700"
+        letter-spacing="0.5"
+        fill="url(#expLogoGrad)"
+      >Experian</text>
+      <circle cx="440" cy="64" r="10" fill="#00a3e0" />
+      <circle cx="466" cy="49" r="8" fill="#8e4bd6" />
+      <circle cx="466" cy="79" r="8" fill="#e20074" />
+      <circle cx="492" cy="64" r="7" fill="#5c2d91" />
+    </svg>
     <main class="shell">
       <header class="hero">
         <h1>Confluence Intelligence Search</h1>

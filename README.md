@@ -87,7 +87,8 @@ Search results include an AI-style summary generated from page content (no searc
 
 ### Conversation Layer (in web UI)
 
-The web app includes a conversation panel that keeps session context and supports follow-up queries:
+The web app includes **Einstein**, a conversation chatbot panel that keeps session
+context and supports follow-up queries:
 
 - Ask a natural question (example: `who owns vault oncall?`)
 - Follow up with:

@@ -14,6 +14,8 @@ from confluence_search_agent import (
     SearchResult,
 )
 
+BOT_NAME = "Einstein"
+
 
 @dataclass
 class ConversationState:
@@ -39,11 +41,17 @@ class ConfluenceConversationAgent:
     def __init__(self, state: ConversationState) -> None:
         self.state = state
 
+    def _speak(self, message: str) -> str:
+        return f"{BOT_NAME}: {message}"
+
     def handle_message(self, message: str, settings: dict[str, Any]) -> ConversationTurn:
         text = re.sub(r"\s+", " ", str(message or "")).strip()
         if not text:
             return ConversationTurn(
-                reply="Ask a question like 'who owns vault oncall' or 'where is the vault runbook?'.",
+                reply=self._speak(
+                    "Ask a question like 'who owns vault oncall' or "
+                    "'where is the vault runbook?'."
+                ),
                 results=[],
             )
 
@@ -59,7 +67,9 @@ class ConfluenceConversationAgent:
 
         if not self.state.base_url:
             return ConversationTurn(
-                reply="Set a Confluence Base URL before starting the conversation.",
+                reply=self._speak(
+                    "Set a Confluence Base URL before starting the conversation."
+                ),
                 results=[],
             )
 
@@ -68,14 +78,18 @@ class ConfluenceConversationAgent:
             or (self.state.email and self.state.api_token)
         ):
             return ConversationTurn(
-                reply="Provide a Personal Access Token, or email + API token, to continue.",
+                reply=self._speak(
+                    "Provide a Personal Access Token, or email + API token, to continue."
+                ),
                 results=[],
             )
 
         if self._is_more_request(text):
             if not self.state.last_query:
                 return ConversationTurn(
-                    reply="There is no previous search yet. Ask a new question first.",
+                    reply=self._speak(
+                        "There is no previous search yet. Ask a new question first."
+                    ),
                     results=[],
                 )
             self.state.limit = min(self.state.limit + 5, 50)
@@ -84,7 +98,7 @@ class ConfluenceConversationAgent:
         if self._is_repeat_request(text):
             if not self.state.last_query:
                 return ConversationTurn(
-                    reply="There is no previous query to repeat yet.",
+                    reply=self._speak("There is no previous query to repeat yet."),
                     results=[],
                 )
             return self._search_turn(self.state.last_query, from_more=False)
@@ -203,7 +217,7 @@ class ConfluenceConversationAgent:
         scope = f" in space {self.state.space_key}" if self.state.space_key else ""
         if not results:
             return ConversationTurn(
-                reply=(
+                reply=self._speak(
                     f"I couldn't find matching pages{scope} for '{query}'. "
                     "Try refining the question, changing the space filter, or asking for more general terms."
                 ),
@@ -216,7 +230,7 @@ class ConfluenceConversationAgent:
         result_summary = self._summarize_result_set(results)
         likely_link = best.url or "No link available."
         return ConversationTurn(
-            reply=(
+            reply=self._speak(
                 f"{mode}Answer: {answer} "
                 f"Most likely result link: {likely_link}. "
                 f"Result summary: {result_summary} "
@@ -262,12 +276,17 @@ class ConfluenceConversationAgent:
     def _result_detail_turn(self, index: int) -> ConversationTurn:
         if not self.state.last_results:
             return ConversationTurn(
-                reply="No prior results are available yet. Ask a search question first.",
+                reply=self._speak(
+                    "No prior results are available yet. Ask a search question first."
+                ),
                 results=[],
             )
         if index < 1 or index > len(self.state.last_results):
             return ConversationTurn(
-                reply=f"Result {index} is out of range. Available range is 1-{len(self.state.last_results)}.",
+                reply=self._speak(
+                    f"Result {index} is out of range. "
+                    f"Available range is 1-{len(self.state.last_results)}."
+                ),
                 results=self.state.last_results,
             )
 
@@ -282,7 +301,9 @@ class ConfluenceConversationAgent:
             detail.append(f"Last modified: {item.last_modified}.")
         if item.url:
             detail.append(f"Link: {item.url}")
-        return ConversationTurn(reply=" ".join(detail), results=self.state.last_results)
+        return ConversationTurn(
+            reply=self._speak(" ".join(detail)), results=self.state.last_results
+        )
 
     @staticmethod
     def _keywords_for_compare(text: str) -> set[str]:
@@ -309,7 +330,9 @@ class ConfluenceConversationAgent:
     def _compare_results_turn(self, first_idx: int, second_idx: int) -> ConversationTurn:
         if not self.state.last_results:
             return ConversationTurn(
-                reply="No prior results are available yet. Ask a search question first.",
+                reply=self._speak(
+                    "No prior results are available yet. Ask a search question first."
+                ),
                 results=[],
             )
         max_idx = len(self.state.last_results)
@@ -320,7 +343,7 @@ class ConfluenceConversationAgent:
             or second_idx > max_idx
         ):
             return ConversationTurn(
-                reply=(
+                reply=self._speak(
                     f"Comparison indices are out of range. "
                     f"Available range is 1-{max_idx}."
                 ),
@@ -328,7 +351,7 @@ class ConfluenceConversationAgent:
             )
         if first_idx == second_idx:
             return ConversationTurn(
-                reply="Please provide two different results to compare.",
+                reply=self._speak("Please provide two different results to compare."),
                 results=self.state.last_results,
             )
 
@@ -355,7 +378,9 @@ class ConfluenceConversationAgent:
             f"Result {second_idx} unique focus: {right_only_text}. "
             "Ask for 'summarize result X' if you want deeper detail."
         )
-        return ConversationTurn(reply=reply, results=self.state.last_results)
+        return ConversationTurn(
+            reply=self._speak(reply), results=self.state.last_results
+        )
 
     @staticmethod
     def _intent_label(intent: QueryIntent) -> str:

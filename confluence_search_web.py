@@ -361,13 +361,13 @@ INDEX_HTML = """<!doctype html>
 
       <section class="panel">
         <div class="chat-wrap">
-          <strong>Conversation Assistant</strong>
+          <strong>Einstein Chatbot</strong>
           <div id="chat-log" aria-live="polite"></div>
           <form id="chat-form" class="chat-form">
             <input
               id="chat-message"
               name="chat_message"
-              placeholder="Ask follow-ups like: who owns this service, summarize result 2, or show more"
+              placeholder="Ask Einstein: who owns this service, summarize result 2, compare #1 and #3, or show more"
               required
             />
             <button type="submit">Send</button>
@@ -625,7 +625,7 @@ INDEX_HTML = """<!doctype html>
 
       appendChatBubble(
         "assistant",
-        "Ready. Ask a question like 'who owns vault oncall?' then follow up with 'summarize result 2' or 'show more'."
+        "Einstein here. Ask a question like 'who owns vault oncall?' then follow up with 'summarize result 2', 'compare #1 and #3', or 'show more'."
       );
     </script>
   </body>

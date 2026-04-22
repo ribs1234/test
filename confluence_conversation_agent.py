@@ -28,12 +28,14 @@ class ConversationState:
     limit: int = DEFAULT_LIMIT
     last_query: str = ""
     last_results: list[SearchResult] = field(default_factory=list)
+    last_page_ids: list[str | None] = field(default_factory=list)
 
 
 @dataclass
 class ConversationTurn:
     reply: str
     results: list[SearchResult]
+    page_ids: list[str | None] = field(default_factory=list)
 
 
 class ConfluenceConversationAgent:
@@ -54,6 +56,7 @@ class ConfluenceConversationAgent:
                     "'where is the vault runbook?'."
                 ),
                 results=[],
+                page_ids=[],
             )
 
         self._apply_settings(settings)
@@ -72,6 +75,7 @@ class ConfluenceConversationAgent:
                     "Set a Confluence Base URL before starting the conversation."
                 ),
                 results=[],
+                page_ids=[],
             )
 
         if not (
@@ -83,6 +87,7 @@ class ConfluenceConversationAgent:
                     "Provide a Personal Access Token, or email + API token, to continue."
                 ),
                 results=[],
+                page_ids=[],
             )
 
         if self._is_more_request(text):
@@ -92,6 +97,7 @@ class ConfluenceConversationAgent:
                         "There is no previous search yet. Ask a new question first."
                     ),
                     results=[],
+                    page_ids=[],
                 )
             self.state.limit = min(self.state.limit + 5, 50)
             return self._search_turn(self.state.last_query, from_more=True)
@@ -101,6 +107,7 @@ class ConfluenceConversationAgent:
                 return ConversationTurn(
                     reply=self._speak("There is no previous query to repeat yet."),
                     results=[],
+                    page_ids=[],
                 )
             return self._search_turn(self.state.last_query, from_more=False)
 
@@ -249,8 +256,10 @@ class ConfluenceConversationAgent:
             api_token=self.state.api_token,
         )
         results = agent.search(query=query, limit=self.state.limit, space_key=self.state.space_key)
+        page_ids = agent.last_result_page_ids()
         self.state.last_query = query
         self.state.last_results = results
+        self.state.last_page_ids = page_ids
 
         intent = ConfluenceSearchAgent._query_intent(query)
         scope = f" in space {self.state.space_key}" if self.state.space_key else ""
@@ -261,6 +270,7 @@ class ConfluenceConversationAgent:
                     "Try refining the question, changing the space filter, or asking for more general terms."
                 ),
                 results=[],
+                page_ids=[],
             )
 
         mode = "I fetched additional matches. " if from_more else ""
@@ -278,6 +288,7 @@ class ConfluenceConversationAgent:
                 "You can ask 'summarize result 2' or 'show more'."
             ),
             results=results,
+            page_ids=page_ids,
         )
 
     @staticmethod
@@ -319,6 +330,7 @@ class ConfluenceConversationAgent:
                     "No prior results are available yet. Ask a search question first."
                 ),
                 results=[],
+                page_ids=[],
             )
         if index < 1 or index > len(self.state.last_results):
             return ConversationTurn(
@@ -327,12 +339,19 @@ class ConfluenceConversationAgent:
                     f"Available range is 1-{len(self.state.last_results)}."
                 ),
                 results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
             )
 
         item = self.state.last_results[index - 1]
+        page_id = (
+            self.state.last_page_ids[index - 1]
+            if index - 1 < len(self.state.last_page_ids)
+            else None
+        )
+        detailed_summary = self._detailed_page_summary(item=item, page_id=page_id)
         detail = [
             f"Result {index}: {item.title}.",
-            f"Summary: {item.summary}",
+            f"Detailed summary: {detailed_summary}",
         ]
         if item.space_key:
             detail.append(f"Space: {item.space_key}.")
@@ -341,8 +360,43 @@ class ConfluenceConversationAgent:
         if item.url:
             detail.append(f"Link: {item.url}")
         return ConversationTurn(
-            reply=self._speak(" ".join(detail)), results=self.state.last_results
+            reply=self._speak(" ".join(detail)),
+            results=self.state.last_results,
+            page_ids=self.state.last_page_ids,
         )
+
+    def _detailed_page_summary(self, *, item: SearchResult, page_id: str | None) -> str:
+        if not page_id or not self.state.base_url:
+            return item.summary
+        if not (
+            self.state.personal_access_token
+            or (self.state.email and self.state.api_token)
+        ):
+            return item.summary
+
+        try:
+            agent = ConfluenceSearchAgent(
+                base_url=self.state.base_url,
+                personal_access_token=self.state.personal_access_token,
+                email=self.state.email,
+                api_token=self.state.api_token,
+            )
+            detailed = agent.generate_detailed_summary(
+                SearchResult(
+                    title=item.title,
+                    url=item.url,
+                    summary=item.summary,
+                    space_key=item.space_key,
+                    last_modified=item.last_modified,
+                    page_id=page_id,
+                ),
+                query=self.state.last_query or item.title,
+            )
+            if detailed:
+                return detailed
+        except (ValueError, ConfluenceSearchError):
+            return item.summary
+        return item.summary
 
     @staticmethod
     def _keywords_for_compare(text: str) -> set[str]:
@@ -373,6 +427,7 @@ class ConfluenceConversationAgent:
                     "No prior results are available yet. Ask a search question first."
                 ),
                 results=[],
+                page_ids=[],
             )
         max_idx = len(self.state.last_results)
         if (
@@ -387,11 +442,13 @@ class ConfluenceConversationAgent:
                     f"Available range is 1-{max_idx}."
                 ),
                 results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
             )
         if first_idx == second_idx:
             return ConversationTurn(
                 reply=self._speak("Please provide two different results to compare."),
                 results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
             )
 
         left = self.state.last_results[first_idx - 1]
@@ -418,7 +475,9 @@ class ConfluenceConversationAgent:
             "Ask for 'summarize result X' if you want deeper detail."
         )
         return ConversationTurn(
-            reply=self._speak(reply), results=self.state.last_results
+            reply=self._speak(reply),
+            results=self.state.last_results,
+            page_ids=self.state.last_page_ids,
         )
 
     @staticmethod

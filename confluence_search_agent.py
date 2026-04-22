@@ -114,6 +114,7 @@ class SearchResult:
     summary: str
     space_key: str | None
     last_modified: str | None
+    page_id: str | None = None
 
 
 @dataclass
@@ -419,6 +420,54 @@ class ConfluenceSearchAgent:
         summary = " ".join(ordered)
         return self._summarize_text(summary)
 
+    def _ai_generate_detailed_summary(self, text: str, *, query: str) -> str:
+        clean = re.sub(r"\s+", " ", text or "").strip()
+        if not clean:
+            return ""
+
+        sentences = self._sentence_split(clean)
+        if not sentences:
+            return self._summarize_text(clean, max_len=920)
+        if len(sentences) <= 3:
+            return self._summarize_text(" ".join(sentences), max_len=920)
+
+        query_terms = {
+            token
+            for token in self._tokenize_words(query)
+            if token not in COMMON_STOPWORDS and len(token) > 1
+        }
+        doc_words = [
+            token
+            for token in self._tokenize_words(clean)
+            if token not in COMMON_STOPWORDS and len(token) > 1
+        ]
+        word_freq: dict[str, int] = {}
+        for token in doc_words:
+            word_freq[token] = word_freq.get(token, 0) + 1
+
+        scored: list[tuple[int, float, str]] = []
+        for idx, sentence in enumerate(sentences):
+            sentence_words = [
+                token
+                for token in self._tokenize_words(sentence)
+                if token not in COMMON_STOPWORDS and len(token) > 1
+            ]
+            if not sentence_words:
+                continue
+            frequency_score = sum(word_freq.get(token, 0) for token in sentence_words)
+            query_boost = sum(2.2 for token in sentence_words if token in query_terms)
+            normalized_score = (frequency_score + query_boost) / max(len(sentence_words), 1)
+            scored.append((idx, normalized_score, sentence.strip()))
+
+        if not scored:
+            return self._summarize_text(" ".join(sentences[:3]), max_len=920)
+
+        top_count = min(5, max(3, len(scored) // 2))
+        top_ranked = sorted(scored, key=lambda item: item[1], reverse=True)[:top_count]
+        ordered = [item[2] for item in sorted(top_ranked, key=lambda item: item[0])]
+        summary = " ".join(ordered)
+        return self._summarize_text(summary, max_len=920)
+
     def _body_text_from_search_entry(self, entry: dict[str, Any]) -> str:
         content = entry.get("content", {})
         body = content.get("body", {})
@@ -429,7 +478,19 @@ class ConfluenceSearchAgent:
                 return text
         return ""
 
-    def _fetch_page_summary(self, api_root: str, page_id: str, *, query: str) -> str | None:
+    @staticmethod
+    def _extract_page_id_from_url(url: str) -> str | None:
+        if not url:
+            return None
+        match = re.search(r"/pages/(\d+)", url)
+        if match:
+            return match.group(1)
+        match = re.search(r"[?&]pageId=(\d+)", url)
+        if match:
+            return match.group(1)
+        return None
+
+    def _fetch_page_body_text(self, api_root: str, page_id: str) -> str | None:
         params = urlencode({"expand": "body.view"})
         url = f"{api_root}/rest/api/content/{page_id}?{params}"
         req = Request(url=url, headers=self._headers(), method="GET")
@@ -448,9 +509,44 @@ class ConfluenceSearchAgent:
         body = data.get("body", {})
         html_value = (body.get("view") or {}).get("value", "")
         text = self._strip_html(html_value)
+        return text or None
+
+    def _fetch_page_summary(self, api_root: str, page_id: str, *, query: str) -> str | None:
+        text = self._fetch_page_body_text(api_root, page_id)
         if not text:
             return None
         return self._ai_generate_summary(text, query=query)
+
+    def fetch_page_body_text(self, page_id: str) -> str | None:
+        """Fetch plain page body text by page id across candidate API roots."""
+        normalized = (page_id or "").strip()
+        if not normalized:
+            return None
+        for api_root in self.api_roots:
+            text = self._fetch_page_body_text(api_root, normalized)
+            if text:
+                return text
+        return None
+
+    def generate_detailed_page_summary(
+        self, text: str, *, title: str = "", query: str = ""
+    ) -> str:
+        """Produce a richer natural summary for a page body."""
+        contextual_query = query.strip() or title.strip()
+        return self._ai_generate_detailed_summary(text, query=contextual_query)
+
+    def generate_detailed_summary(
+        self, result: SearchResult, *, query: str
+    ) -> str | None:
+        page_id = (result.page_id or "").strip() or self._extract_page_id_from_url(result.url)
+        if not page_id:
+            return None
+
+        for api_root in self.api_roots:
+            text = self._fetch_page_body_text(api_root, page_id)
+            if text:
+                return self._ai_generate_detailed_summary(text, query=query)
+        return None
 
     def _parse_json_payload(
         self,
@@ -686,6 +782,7 @@ class ConfluenceSearchAgent:
                     or "No readable page content available for AI summary.",
                     space_key=(content.get("space") or {}).get("key"),
                     last_modified=(content.get("version") or {}).get("when"),
+                    page_id=str(content.get("id") or "").strip() or None,
                 )
             )
 

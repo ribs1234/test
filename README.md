@@ -91,7 +91,7 @@ submission field.
 
 - Ask a natural question (example: `who owns vault oncall?`)
 - Follow up with:
-  - `summarize result 2`
+  - `summarize result 2` (Einstein fetches that page's content for a more detailed natural summary)
   - `compare result 1 and 3`
   - `show more`
   - `again`

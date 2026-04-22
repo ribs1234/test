@@ -590,10 +590,31 @@ class ConfluenceSearchAgent:
         *,
         limit: int = 10,
         space_key: str | None = None,
+        space_keys: list[str] | None = None,
+        exclude_terms: list[str] | None = None,
+        modified_since: str | None = None,
+        modified_before: str | None = None,
     ) -> list[SearchResult]:
         intent = self._query_intent(query)
         if not intent.search_phrase:
             return []
+
+        normalized_space_keys: list[str] = []
+        for candidate in [space_key, *(space_keys or [])]:
+            value = re.sub(r"\s+", "", str(candidate or "")).upper()
+            if not value:
+                continue
+            if value not in normalized_space_keys:
+                normalized_space_keys.append(value)
+
+        normalized_exclusions: list[str] = []
+        for term in (exclude_terms or []):
+            cleaned = re.sub(r"\s+", " ", str(term or "")).strip()
+            if not cleaned:
+                continue
+            if cleaned.lower() in {item.lower() for item in normalized_exclusions}:
+                continue
+            normalized_exclusions.append(cleaned)
 
         escaped_phrase = self._escape_cql_text(intent.search_phrase)
         title_or_text_terms = [
@@ -606,8 +627,23 @@ class ConfluenceSearchAgent:
             title_or_text_terms.append(f'text~"{escaped_keyword}"')
 
         cql_parts = ["type=page", f"({' or '.join(title_or_text_terms)})"]
-        if space_key:
-            cql_parts.append(f'space="{space_key}"')
+        if normalized_space_keys:
+            if len(normalized_space_keys) == 1:
+                cql_parts.append(f'space="{normalized_space_keys[0]}"')
+            else:
+                quoted_spaces = ", ".join(f'"{item}"' for item in normalized_space_keys)
+                cql_parts.append(f"space in ({quoted_spaces})")
+        if modified_since:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", modified_since.strip()):
+                raise ValueError("modified_since must use YYYY-MM-DD format.")
+            cql_parts.append(f'lastmodified >= "{modified_since.strip()}"')
+        if modified_before:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", modified_before.strip()):
+                raise ValueError("modified_before must use YYYY-MM-DD format.")
+            cql_parts.append(f'lastmodified <= "{modified_before.strip()}"')
+        for term in normalized_exclusions:
+            escaped_term = self._escape_cql_text(term)
+            cql_parts.append(f'not (title~"{escaped_term}" or text~"{escaped_term}")')
         cql = " and ".join(cql_parts)
 
         params = urlencode(

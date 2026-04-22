@@ -93,13 +93,25 @@ submission field.
 - Follow up with:
   - `summarize result 2` (Einstein fetches that page's content for a more detailed natural summary)
   - `compare result 1 and 3`
+  - `what changed result 2` (compares with the prior result set snapshot)
   - `show more`
   - `again`
-  - `in ENG space ...` or `clear space filter`
+  - `in ENG space ...`, `in ENG and OPS spaces ...`, or `clear space filter`
   - `top 5 ...`, `show 12 results ...`, `first 3 ...` to set result count from the question
+  - `since 2026-01-01 ...`, `between 2026-01-01 and 2026-03-01 ...`, `last 14 days ...`
+  - `excluding draft ...`, `without legacy ...`, or `-deprecated`
 
 Einstein infers both space filters and result count from the chat message, so
 there are no dedicated **Space Key** or **Limit** UI fields.
+
+Einstein responses are now source-grounded:
+- Direct answers include inline citations (`[1]`, `[2]`, ...)
+- A **Sources** section maps each citation to a concrete Confluence page link
+
+The results panel also includes per-result quick actions:
+- **Explain** -> sends `summarize result X`
+- **Compare** -> sends `compare result X and result Y`
+- **What changed** -> compares result `X` with the previous search snapshot
 
 - Conversation controls:
   - **Clear Conversation** resets the in-session chat state and prior results

@@ -211,6 +211,29 @@ INDEX_HTML = """<!doctype html>
         color: var(--text);
         line-height: 1.5;
       }
+      .result-actions {
+        display: flex;
+        gap: 0.45rem;
+        flex-wrap: wrap;
+        margin-top: 0.75rem;
+      }
+      .tiny-btn {
+        padding: 0.34rem 0.72rem;
+        font-size: 0.76rem;
+        border-radius: 999px;
+        background: #eef2ff;
+        color: var(--exp-blue);
+        border: 1px solid #ced8ff;
+        box-shadow: none;
+      }
+      .tiny-btn:hover:not(:disabled) {
+        background: #e3ebff;
+        filter: none;
+      }
+      .tiny-btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
       .chat-wrap {
         display: grid;
         gap: 0.8rem;
@@ -340,7 +363,7 @@ INDEX_HTML = """<!doctype html>
           </label>
 
           <span class="hint full">
-            Credentials are used only for live API calls and not persisted. Einstein infers space and result count from your question (for example: "top 5 in ENG space").
+            Credentials are used only for live API calls and not persisted. Einstein infers filters from your question, including space(s), result count, date ranges, and exclude terms (for example: "top 5 in ENG and OPS spaces since 2026-01-01 excluding draft").
           </span>
         </div>
       </section>
@@ -389,6 +412,7 @@ INDEX_HTML = """<!doctype html>
       const clearChatBtnEl = document.getElementById("clear-chat-btn");
       const exportChatBtnEl = document.getElementById("export-chat-btn");
       const chatTranscript = [];
+      let lastRenderedResults = [];
 
       function status(message, isError = false) {
         statusEl.textContent = message;
@@ -455,14 +479,15 @@ INDEX_HTML = """<!doctype html>
 
       function renderResults(items) {
         resultsEl.textContent = "";
-        if (!items.length) {
+        lastRenderedResults = Array.isArray(items) ? items : [];
+        if (!lastRenderedResults.length) {
           const empty = document.createElement("p");
           empty.textContent = "No matching pages found.";
           resultsEl.appendChild(empty);
           return;
         }
 
-        for (const item of items) {
+        for (const item of lastRenderedResults) {
           const box = document.createElement("section");
           box.className = "result";
 
@@ -493,21 +518,63 @@ INDEX_HTML = """<!doctype html>
             summary.textContent = item.summary;
             box.appendChild(summary);
           }
+
+          const resultIndex = Number(item.index) || 0;
+          if (resultIndex > 0) {
+            const actions = document.createElement("div");
+            actions.className = "result-actions";
+
+            const explainBtn = document.createElement("button");
+            explainBtn.type = "button";
+            explainBtn.className = "tiny-btn result-action-btn";
+            explainBtn.dataset.action = "summarize";
+            explainBtn.dataset.index = String(resultIndex);
+            explainBtn.textContent = "Explain";
+            actions.appendChild(explainBtn);
+
+            const compareBtn = document.createElement("button");
+            compareBtn.type = "button";
+            compareBtn.className = "tiny-btn result-action-btn";
+            compareBtn.dataset.action = "compare";
+            compareBtn.dataset.index = String(resultIndex);
+            const hasCompareTarget = lastRenderedResults.length > 1;
+            if (!hasCompareTarget) {
+              compareBtn.disabled = true;
+              compareBtn.textContent = "Compare";
+            } else if (resultIndex === 1) {
+              compareBtn.dataset.compareWith = "2";
+              compareBtn.textContent = "Compare vs #2";
+            } else {
+              compareBtn.dataset.compareWith = "1";
+              compareBtn.textContent = "Compare vs #1";
+            }
+            actions.appendChild(compareBtn);
+
+            const changedBtn = document.createElement("button");
+            changedBtn.type = "button";
+            changedBtn.className = "tiny-btn result-action-btn";
+            changedBtn.dataset.action = "changed";
+            changedBtn.dataset.index = String(resultIndex);
+            changedBtn.textContent = "What changed";
+            actions.appendChild(changedBtn);
+            box.appendChild(actions);
+          }
           resultsEl.appendChild(box);
         }
       }
 
-      chatFormEl.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const message = chatMessageEl.value.trim();
-        if (!message) return;
-        appendChatBubble("user", message);
-        chatMessageEl.value = "";
+      async function sendChatMessage(message, options = {}) {
+        const { echoUser = true } = options;
+        const trimmed = String(message || "").trim();
+        if (!trimmed) return;
+        if (echoUser) {
+          appendChatBubble("user", trimmed);
+        }
         status("Conversation search running...");
         setLoading(true);
 
         const payload = {
-          message,
+          message: trimmed,
           settings: currentSettings(),
         };
 
@@ -529,6 +596,41 @@ INDEX_HTML = """<!doctype html>
           status(err.message || "Conversation request failed.", true);
         } finally {
           setLoading(false);
+        }
+      }
+
+      chatFormEl.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = chatMessageEl.value.trim();
+        if (!message) return;
+        chatMessageEl.value = "";
+        await sendChatMessage(message, { echoUser: true });
+      });
+
+      resultsEl.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const button = target.closest(".result-action-btn");
+        if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+        const idx = Number(button.dataset.index || "0");
+        if (!idx) return;
+
+        const action = button.dataset.action || "";
+        if (action === "summarize") {
+          await sendChatMessage(`summarize result ${idx}`, { echoUser: true });
+          return;
+        }
+        if (action === "compare") {
+          const compareWith = Number(button.dataset.compareWith || "0");
+          if (!compareWith || compareWith === idx) return;
+          await sendChatMessage(
+            `compare result ${idx} and result ${compareWith}`,
+            { echoUser: true }
+          );
+          return;
+        }
+        if (action === "changed") {
+          await sendChatMessage(`what changed result ${idx}`, { echoUser: true });
         }
       });
 
@@ -578,7 +680,7 @@ INDEX_HTML = """<!doctype html>
 
       appendChatBubble(
         "assistant",
-        "Einstein here. Ask a question like 'who owns vault oncall?' then follow up with 'summarize result 2', 'compare #1 and #3', or 'show more'."
+        "Einstein here. Ask a question like 'who owns vault oncall?' then follow up with 'summarize result 2', 'compare #1 and #3', or 'show more'. I can also apply filters like 'in ENG and OPS spaces', 'since 2026-01-01', or 'excluding draft'."
       );
     </script>
   </body>
@@ -597,8 +699,12 @@ class SearchHandler(BaseHTTPRequestHandler):
         self._write_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
-        if self.path not in {"/api/search", "/api/chat"}:
+        if self.path not in {"/api/search", "/api/chat", "/api/chat/clear"}:
             self._write_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        if self.path == "/api/chat/clear":
+            self._handle_chat_clear()
             return
 
         payload = self._read_json_payload()
@@ -625,7 +731,29 @@ class SearchHandler(BaseHTTPRequestHandler):
             limit = int(payload.get("limit", 10))
             limit = max(1, min(limit, 50))
             space_key = payload.get("space_key")
-            results = agent.search(query=query, limit=limit, space_key=space_key)
+            incoming_space_keys = payload.get("space_keys")
+            space_keys = (
+                [str(item) for item in incoming_space_keys]
+                if isinstance(incoming_space_keys, list)
+                else None
+            )
+            incoming_exclude_terms = payload.get("exclude_terms")
+            exclude_terms = (
+                [str(item) for item in incoming_exclude_terms]
+                if isinstance(incoming_exclude_terms, list)
+                else None
+            )
+            modified_since = str(payload.get("modified_since") or "").strip() or None
+            modified_before = str(payload.get("modified_before") or "").strip() or None
+            results = agent.search(
+                query=query,
+                limit=limit,
+                space_key=space_key,
+                space_keys=space_keys,
+                exclude_terms=exclude_terms,
+                modified_since=modified_since,
+                modified_before=modified_before,
+            )
             self._write_json({"results": [result.__dict__ for result in results]})
         except (ValueError, ConfluenceSearchError) as exc:
             self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -666,6 +794,16 @@ class SearchHandler(BaseHTTPRequestHandler):
                 {"error": "Unexpected server error while handling conversation."},
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+
+    def _handle_chat_clear(self) -> None:
+        session_state = self._get_or_create_conversation_state()
+        session_state.last_query = ""
+        session_state.last_results = []
+        session_state.last_page_ids = []
+        session_state.previous_query = ""
+        session_state.previous_results = []
+        session_state.previous_page_ids = []
+        self._write_json({"reply": "Einstein: Conversation cleared."})
 
     def _read_json_payload(self) -> dict[str, Any] | None:
         try:

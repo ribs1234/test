@@ -126,6 +126,15 @@ class QueryIntent:
     boost_terms: list[str]
 
 
+@dataclass
+class ModelSummarizerConfig:
+    backend: str
+    api_key: str | None
+    model: str | None
+    api_base: str
+    max_results: int
+
+
 class ConfluenceSearchAgent:
     """Minimal API client that searches Confluence pages by CQL."""
 
@@ -137,6 +146,11 @@ class ConfluenceSearchAgent:
         personal_access_token: str | None = None,
         bearer_token: str | None = None,
         timeout: int = 20,
+        summarizer_backend: str | None = None,
+        summarizer_api_key: str | None = None,
+        summarizer_model: str | None = None,
+        summarizer_api_base: str | None = None,
+        summarizer_max_results: int | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("base_url is required")
@@ -147,12 +161,65 @@ class ConfluenceSearchAgent:
         self.personal_access_token = personal_access_token
         self.bearer_token = bearer_token
         self.timeout = timeout
+        self.model_summarizer = self._resolve_model_summarizer_config(
+            backend=summarizer_backend,
+            api_key=summarizer_api_key,
+            model=summarizer_model,
+            api_base=summarizer_api_base,
+            max_results=summarizer_max_results,
+        )
+        self._model_summary_cache: dict[tuple[bool, str, str], str | None] = {}
 
         has_bearer_auth = bool(personal_access_token or bearer_token)
         if not has_bearer_auth and not (email and api_token):
             raise ValueError(
                 "Authentication required: set personal access token, bearer token, or email + API token."
             )
+
+    @staticmethod
+    def _resolve_model_summarizer_config(
+        *,
+        backend: str | None,
+        api_key: str | None,
+        model: str | None,
+        api_base: str | None,
+        max_results: int | None,
+    ) -> ModelSummarizerConfig:
+        resolved_backend = (
+            backend or os.getenv("CONFLUENCE_SUMMARIZER_BACKEND", "auto")
+        ).strip().lower()
+        if resolved_backend not in {"auto", "heuristic", "model"}:
+            resolved_backend = "auto"
+        resolved_key = (api_key or os.getenv("CONFLUENCE_SUMMARIZER_API_KEY", "")).strip()
+        resolved_model = (model or os.getenv("CONFLUENCE_SUMMARIZER_MODEL", "")).strip()
+        resolved_api_base = (
+            api_base
+            or os.getenv("CONFLUENCE_SUMMARIZER_API_BASE", "https://api.openai.com/v1")
+        ).strip()
+        resolved_api_base = resolved_api_base.rstrip("/") or "https://api.openai.com/v1"
+
+        raw_max_results = (
+            max_results
+            if max_results is not None
+            else os.getenv("CONFLUENCE_SUMMARIZER_MAX_RESULTS", "5")
+        )
+        try:
+            parsed_max_results = int(raw_max_results)
+        except (TypeError, ValueError):
+            parsed_max_results = 5
+
+        return ModelSummarizerConfig(
+            backend=resolved_backend,
+            api_key=resolved_key or None,
+            model=resolved_model or None,
+            api_base=resolved_api_base,
+            max_results=max(1, min(parsed_max_results, 50)),
+        )
+
+    def _has_model_summarizer(self) -> bool:
+        if self.model_summarizer.backend == "heuristic":
+            return False
+        return bool(self.model_summarizer.api_key and self.model_summarizer.model)
 
     @staticmethod
     def _candidate_api_roots(base_url: str) -> list[str]:
@@ -372,10 +439,111 @@ class ConfluenceSearchAgent:
     def _tokenize_words(text: str) -> list[str]:
         return [word.lower() for word in re.findall(r"[A-Za-z0-9']+", text)]
 
-    def _ai_generate_summary(self, text: str, *, query: str) -> str:
+    def _chat_completion_text_from_payload(self, payload: dict[str, Any]) -> str | None:
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return None
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message") if isinstance(first, dict) else {}
+        if not isinstance(message, dict):
+            return None
+        content = message.get("content")
+        if isinstance(content, str):
+            return re.sub(r"\s+", " ", content).strip() or None
+        if isinstance(content, list):
+            pieces: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                text_part = part.get("text")
+                if isinstance(text_part, str) and text_part.strip():
+                    pieces.append(text_part.strip())
+            if pieces:
+                return re.sub(r"\s+", " ", " ".join(pieces)).strip() or None
+        return None
+
+    def _model_generate_summary(
+        self, text: str, *, query: str, detailed: bool, max_len: int
+    ) -> str | None:
+        if not self._has_model_summarizer():
+            return None
+
+        clean_text = re.sub(r"\s+", " ", text or "").strip()
+        if not clean_text:
+            return None
+        clipped_input = clean_text[:9000]
+        cache_key = (detailed, query.strip().lower(), clipped_input[:2400])
+        if cache_key in self._model_summary_cache:
+            return self._model_summary_cache[cache_key]
+
+        style = "a detailed natural summary in 4-6 sentences" if detailed else "a concise summary in 1-2 sentences"
+        system_prompt = (
+            "You are a helpful summarizer for Confluence documentation. "
+            "Be factual, grounded in the provided text, and avoid speculation."
+        )
+        user_prompt = (
+            f"Query context: {query.strip() or 'general'}\n"
+            f"Task: Produce {style} that answers what this page is about and why it matters.\n"
+            "Do not mention missing context. Return plain text only.\n\n"
+            f"Page content:\n{clipped_input}"
+        )
+        payload = {
+            "model": self.model_summarizer.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 500 if detailed else 180,
+        }
+        request = Request(
+            url=f"{self.model_summarizer.api_base}/chat/completions",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.model_summarizer.api_key}",
+            },
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=max(self.timeout, 30)) as response:
+                raw = response.read()
+                content_type = response.headers.get("Content-Type", "")
+            parsed = self._parse_json_payload(
+                raw,
+                content_type=content_type,
+                context="Model summarizer response",
+            )
+            generated = self._chat_completion_text_from_payload(parsed)
+            if generated:
+                if generated.lower().startswith("summary:"):
+                    generated = generated.split(":", 1)[1].strip()
+                normalized = self._summarize_text(generated, max_len=max_len)
+                self._model_summary_cache[cache_key] = normalized or None
+                return normalized or None
+        except (HTTPError, URLError, ConfluenceSearchError, ValueError, TypeError):
+            self._model_summary_cache[cache_key] = None
+            return None
+
+        self._model_summary_cache[cache_key] = None
+        return None
+
+    def _ai_generate_summary(
+        self, text: str, *, query: str, prefer_model: bool = True
+    ) -> str:
         clean = re.sub(r"\s+", " ", text or "").strip()
         if not clean:
             return ""
+        if prefer_model:
+            model_summary = self._model_generate_summary(
+                clean,
+                query=query,
+                detailed=False,
+                max_len=320,
+            )
+            if model_summary:
+                return model_summary
 
         sentences = self._sentence_split(clean)
         if not sentences:
@@ -420,10 +588,21 @@ class ConfluenceSearchAgent:
         summary = " ".join(ordered)
         return self._summarize_text(summary)
 
-    def _ai_generate_detailed_summary(self, text: str, *, query: str) -> str:
+    def _ai_generate_detailed_summary(
+        self, text: str, *, query: str, prefer_model: bool = True
+    ) -> str:
         clean = re.sub(r"\s+", " ", text or "").strip()
         if not clean:
             return ""
+        if prefer_model:
+            model_summary = self._model_generate_summary(
+                clean,
+                query=query,
+                detailed=True,
+                max_len=920,
+            )
+            if model_summary:
+                return model_summary
 
         sentences = self._sentence_split(clean)
         if not sentences:
@@ -515,7 +694,7 @@ class ConfluenceSearchAgent:
         text = self._fetch_page_body_text(api_root, page_id)
         if not text:
             return None
-        return self._ai_generate_summary(text, query=query)
+        return self._ai_generate_summary(text, query=query, prefer_model=True)
 
     def fetch_page_body_text(self, page_id: str) -> str | None:
         """Fetch plain page body text by page id across candidate API roots."""
@@ -533,7 +712,11 @@ class ConfluenceSearchAgent:
     ) -> str:
         """Produce a richer natural summary for a page body."""
         contextual_query = query.strip() or title.strip()
-        return self._ai_generate_detailed_summary(text, query=contextual_query)
+        return self._ai_generate_detailed_summary(
+            text,
+            query=contextual_query,
+            prefer_model=True,
+        )
 
     def generate_detailed_summary(
         self, result: SearchResult, *, query: str
@@ -545,7 +728,11 @@ class ConfluenceSearchAgent:
         for api_root in self.api_roots:
             text = self._fetch_page_body_text(api_root, page_id)
             if text:
-                return self._ai_generate_detailed_summary(text, query=query)
+                return self._ai_generate_detailed_summary(
+                    text,
+                    query=query,
+                    prefer_model=True,
+                )
         return None
 
     def _parse_json_payload(
@@ -790,7 +977,7 @@ class ConfluenceSearchAgent:
         top_base = top_links.get("base", self.base_url)
         summary_cache: dict[str, str] = {}
 
-        for entry in data.get("results", []):
+        for idx, entry in enumerate(data.get("results", [])):
             content = entry.get("content", {})
             links = content.get("_links", {})
             base = links.get("base", top_base)
@@ -799,6 +986,7 @@ class ConfluenceSearchAgent:
             summary = self._ai_generate_summary(
                 self._body_text_from_search_entry(entry),
                 query=query,
+                prefer_model=idx < self.model_summarizer.max_results,
             )
             if not summary:
                 page_id = str(content.get("id") or "").strip()
@@ -868,6 +1056,48 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="HTTP timeout in seconds",
     )
     parser.add_argument(
+        "--summarizer-backend",
+        default=os.getenv("CONFLUENCE_SUMMARIZER_BACKEND", "auto"),
+        choices=["auto", "heuristic", "model"],
+        help=(
+            "Summarizer backend selection: auto (default), heuristic, or model "
+            "(or set CONFLUENCE_SUMMARIZER_BACKEND)"
+        ),
+    )
+    parser.add_argument(
+        "--summarizer-api-key",
+        default=os.getenv("CONFLUENCE_SUMMARIZER_API_KEY"),
+        help=(
+            "API key for model-backed summarizer "
+            "(or set CONFLUENCE_SUMMARIZER_API_KEY)"
+        ),
+    )
+    parser.add_argument(
+        "--summarizer-model",
+        default=os.getenv("CONFLUENCE_SUMMARIZER_MODEL"),
+        help=(
+            "Model name for model-backed summarizer "
+            "(or set CONFLUENCE_SUMMARIZER_MODEL)"
+        ),
+    )
+    parser.add_argument(
+        "--summarizer-api-base",
+        default=os.getenv("CONFLUENCE_SUMMARIZER_API_BASE", "https://api.openai.com/v1"),
+        help=(
+            "OpenAI-compatible API base URL for model summarizer "
+            "(or set CONFLUENCE_SUMMARIZER_API_BASE)"
+        ),
+    )
+    parser.add_argument(
+        "--summarizer-max-results",
+        type=int,
+        default=int(os.getenv("CONFLUENCE_SUMMARIZER_MAX_RESULTS", "5")),
+        help=(
+            "Max search results per query to summarize with the model "
+            "(or set CONFLUENCE_SUMMARIZER_MAX_RESULTS)"
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output results as JSON",
@@ -907,6 +1137,11 @@ def main(argv: list[str]) -> int:
             personal_access_token=args.personal_access_token,
             bearer_token=args.bearer_token,
             timeout=args.timeout,
+            summarizer_backend=args.summarizer_backend,
+            summarizer_api_key=args.summarizer_api_key,
+            summarizer_model=args.summarizer_model,
+            summarizer_api_base=args.summarizer_api_base,
+            summarizer_max_results=args.summarizer_max_results,
         )
         results = agent.search(args.query, limit=args.limit, space_key=args.space_key)
     except (ValueError, ConfluenceSearchError) as exc:

@@ -58,6 +58,37 @@ python confluence_search_agent.py "incident runbook" --json
 
 You can also pass credentials and URL as flags (`--base-url`, `--personal-access-token`, `--email`, `--api-token`, `--bearer-token`), but environment variables are simpler for local usage.
 
+### Optional model-backed summarizer
+
+By default, summaries use the built-in heuristic summarizer. You can enable a
+model-backed summarizer (OpenAI-compatible chat completions API) for richer
+summaries, with automatic fallback to the heuristic summarizer if the model is
+not configured or the model call fails.
+
+Environment variables:
+
+- `CONFLUENCE_SUMMARIZER_BACKEND` (`auto`, `heuristic`, or `model`; default `auto`)
+- `CONFLUENCE_SUMMARIZER_API_KEY`
+- `CONFLUENCE_SUMMARIZER_MODEL`
+- `CONFLUENCE_SUMMARIZER_API_BASE` (optional, defaults to `https://api.openai.com/v1`)
+- `CONFLUENCE_SUMMARIZER_MAX_RESULTS` (optional, defaults to `5`, max `50`)
+
+Equivalent CLI flags:
+
+- `--summarizer-backend`
+- `--summarizer-api-key`
+- `--summarizer-model`
+- `--summarizer-api-base`
+- `--summarizer-max-results`
+
+Example:
+
+```bash
+export CONFLUENCE_SUMMARIZER_API_KEY="..."
+export CONFLUENCE_SUMMARIZER_MODEL="gpt-4.1-mini"
+python3 confluence_search_agent.py "where can I find the 4x9 status page?"
+```
+
 ## Local Web UI (localhost)
 
 Run:

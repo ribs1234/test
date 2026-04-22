@@ -1,0 +1,23 @@
+[
+  {
+    "query": "who owns 4x9?",
+    "expected_any": [
+      "4x9 Ownership Matrix",
+      "4x9 Service Ownership"
+    ],
+    "space_key": "ENG"
+  },
+  {
+    "query": "where can I find 4x9 status",
+    "expected_any": [
+      "4x9 Status Dashboard"
+    ]
+  },
+  {
+    "query": "how do I troubleshoot 4x9",
+    "expected_any": [
+      "4x9 Runbook"
+    ],
+    "limit": 8
+  }
+]

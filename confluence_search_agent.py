@@ -965,8 +965,8 @@ class ConfluenceSearchAgent:
         if intent.intent_label == "general" and not intent.keywords:
             return 0.0
 
-        title = (result.title or "").lower()
-        summary = (result.summary or "").lower()
+        title = str(result.title or "").lower()
+        summary = str(result.summary or "").lower()
         haystack = f"{title} {summary}"
         score = 0.0
 
@@ -1010,8 +1010,8 @@ class ConfluenceSearchAgent:
         keywords = [token for token in intent.keywords if token]
         if not keywords:
             return 0.0
-        title = (result.title or "").lower()
-        summary = (result.summary or "").lower()
+        title = str(result.title or "").lower()
+        summary = str(result.summary or "").lower()
         haystack = f"{title} {summary}"
         hits = sum(1 for token in keywords if token in haystack)
         if hits <= 0:
@@ -1020,7 +1020,7 @@ class ConfluenceSearchAgent:
 
     @staticmethod
     def _recency_score(result: SearchResult) -> float:
-        stamp = (result.last_modified or "").strip()
+        stamp = str(result.last_modified or "").strip()
         if not stamp:
             return 0.0
         match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", stamp)
@@ -1037,10 +1037,14 @@ class ConfluenceSearchAgent:
         return ((year * 372) + (month * 31) + day) / 1_000_000.0
 
     def _result_relevance_score(self, result: SearchResult, intent: QueryIntent) -> float:
-        intent_boost = self._result_boost_score(result, intent)
-        coverage = self._keyword_coverage_score(result, intent)
-        recency = self._recency_score(result)
-        return (intent_boost * 1.25) + (coverage * 3.2) + recency
+        try:
+            intent_boost = self._result_boost_score(result, intent)
+            coverage = self._keyword_coverage_score(result, intent)
+            recency = self._recency_score(result)
+            return (intent_boost * 1.25) + (coverage * 3.2) + recency
+        except Exception:
+            # Never let reranking crash the conversation path.
+            return 0.0
 
     def _rank_results_by_intent(
         self,

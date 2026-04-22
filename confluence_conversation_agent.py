@@ -12,6 +12,7 @@ from confluence_search_agent import (
     ConfluenceSearchAgent,
     ConfluenceSearchError,
     QueryIntent,
+    RankingDiagnostics,
     SearchResult,
 )
 
@@ -37,6 +38,9 @@ class ConversationState:
     previous_query: str = ""
     previous_results: list[SearchResult] = field(default_factory=list)
     previous_page_ids: list[str | None] = field(default_factory=list)
+    last_ranking: RankingDiagnostics | None = None
+    previous_ranking: RankingDiagnostics | None = None
+    clarification_confidence_threshold: float = 0.62
     pending_clarification_query: str = ""
     pending_clarification_options: list[str] = field(default_factory=list)
 
@@ -212,6 +216,11 @@ class ConfluenceConversationAgent:
     def _clear_pending_clarification(self) -> None:
         self.state.pending_clarification_query = ""
         self.state.pending_clarification_options = []
+
+    @staticmethod
+    def _format_confidence_percent(value: float) -> str:
+        bounded = max(0.0, min(float(value), 1.0))
+        return f"{int(round(bounded * 100))}%"
 
     def _apply_settings(self, settings: dict[str, Any]) -> None:
         base_url = str(settings.get("base_url", "")).strip()
@@ -653,10 +662,17 @@ class ConfluenceConversationAgent:
         return hits / max(len(query_terms), 1)
 
     def _should_ask_clarification(
-        self, *, query: str, intent: QueryIntent, results: list[SearchResult]
+        self,
+        *,
+        query: str,
+        intent: QueryIntent,
+        results: list[SearchResult],
+        ranking: RankingDiagnostics | None,
     ) -> bool:
         if len(results) < 2:
             return False
+        if ranking is not None and ranking.confidence < self.state.clarification_confidence_threshold:
+            return True
         query_terms = self._question_word_tokens(query)
         if intent.intent_label == "general" and len(query_terms) <= 2:
             return True
@@ -688,12 +704,23 @@ class ConfluenceConversationAgent:
         return options
 
     def _clarification_turn(
-        self, *, query: str, results: list[SearchResult], page_ids: list[str | None]
+        self,
+        *,
+        query: str,
+        results: list[SearchResult],
+        page_ids: list[str | None],
+        ranking: RankingDiagnostics | None,
     ) -> ConversationTurn:
         options = self._clarification_options_from_results(results)
+        confidence_line = (
+            f"Current confidence: {self._format_confidence_percent(ranking.confidence)}.\n"
+            if ranking is not None
+            else ""
+        )
         if not options:
             return ConversationTurn(
                 reply=self._speak(
+                    f"{confidence_line}"
                     "I found multiple possible matches. Can you add one detail "
                     "(team name, space, or date range) so I can narrow this down?"
                 ),
@@ -706,6 +733,7 @@ class ConfluenceConversationAgent:
         numbered = "\n".join(f"{idx}) {option}" for idx, option in enumerate(options, start=1))
         return ConversationTurn(
             reply=self._speak(
+                f"{confidence_line}"
                 "I found a few plausible interpretations. Which one did you mean?\n"
                 f"{numbered}\n"
                 "Reply with a number, or add a detail (for example: team, space, or date range)."
@@ -735,13 +763,16 @@ class ConfluenceConversationAgent:
             modified_since=self.state.modified_since,
             modified_before=self.state.modified_before,
         )
+        ranking = agent.last_ranking()
         page_ids = [item.page_id for item in results]
         self.state.previous_query = prior_query
         self.state.previous_results = prior_results
         self.state.previous_page_ids = prior_page_ids
+        self.state.previous_ranking = self.state.last_ranking
         self.state.last_query = query
         self.state.last_results = results
         self.state.last_page_ids = page_ids
+        self.state.last_ranking = ranking
 
         intent = ConfluenceSearchAgent._query_intent(query)
         filter_scope = self._active_filter_scope()
@@ -756,9 +787,14 @@ class ConfluenceConversationAgent:
                 page_ids=[],
             )
         if allow_clarification and self._should_ask_clarification(
-            query=query, intent=intent, results=results
+            query=query, intent=intent, results=results, ranking=ranking
         ):
-            return self._clarification_turn(query=query, results=results, page_ids=page_ids)
+            return self._clarification_turn(
+                query=query,
+                results=results,
+                page_ids=page_ids,
+                ranking=ranking,
+            )
 
         self._clear_pending_clarification()
         mode = "I fetched additional matches. " if from_more else ""
@@ -778,6 +814,7 @@ class ConfluenceConversationAgent:
                 "Search details:\n"
                 f"- Results: {len(results)}{filter_scope}\n"
                 f"- Intent: {self._intent_label(intent)}\n\n"
+                f"- Confidence: {self._format_confidence_percent((ranking.confidence if ranking else 0.0))}\n\n"
                 "Next actions:\n"
                 "- summarize result 2\n"
                 "- what changed result 2\n"

@@ -12,6 +12,8 @@ Small Python tools for searching Confluence pages by query using the Confluence 
 - `confluence_search_agent.py` - main CLI and lightweight search client
 - `confluence_search_web.py` - local web UI served on `localhost`
 - `confluence_conversation_agent.py` - multi-turn conversation layer for follow-up questions
+- `eval_harness.py` - optional retrieval/confidence evaluation script
+- `eval_queries.example.json` - sample evaluation cases file
 
 ## Authentication
 
@@ -169,6 +171,8 @@ Einstein responses are now source-grounded:
 - Direct answers include inline citations (`[1]`, `[2]`, ...)
 - A **Sources** section maps each citation to a concrete Confluence page link
 - Responses are sectioned for readability (Direct answer, Top matches, Sources, Next actions)
+- Search diagnostics include confidence scoring; low confidence can trigger
+  clarification instead of guessing.
 
 The results panel also includes per-result quick actions:
 - **Explain** -> sends `summarize result X`
@@ -180,3 +184,36 @@ The results panel also includes per-result quick actions:
   - **Export Transcript** downloads the full chat transcript as a `.txt` file
 
 Conversation state is stored per browser session (via local server session cookie) and used only for this local app runtime.
+
+## Evaluation harness
+
+Use the evaluation harness to track retrieval quality (top-k hit rates) and
+confidence diagnostics over a fixed set of representative queries.
+
+1. Copy and edit the sample cases:
+
+```bash
+cp eval_queries.example.json eval_queries.json
+```
+
+Each case supports:
+- `query` (required)
+- `expected_any` (list of title/url substrings expected in relevant results)
+- `limit` (optional per-case override)
+- `space_key` (optional per-case space filter)
+
+2. Run the evaluation:
+
+```bash
+python3 eval_harness.py --cases-file eval_queries.json
+```
+
+Optional global overrides:
+- `--limit 10`
+- `--space-key ENG`
+
+The harness prints per-case diagnostics plus aggregate:
+- top-1 hit rate
+- top-3 hit rate
+- average confidence
+- average score gap

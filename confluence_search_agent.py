@@ -142,6 +142,30 @@ class RetrievalConfig:
     candidate_pool_cap: int
 
 
+@dataclass
+class ConfidenceMetrics:
+    confidence: float
+    top_score: float
+    second_score: float
+    score_gap: float
+    keyword_coverage: float
+    low_confidence: bool
+
+
+@dataclass
+class RankingDiagnostics:
+    query: str
+    intent_label: str
+    confidence: float
+    low_confidence: bool
+    top_score: float
+    second_score: float
+    score_gap: float
+    keyword_coverage: float
+    scored_count: int
+    returned_count: int
+
+
 class ConfluenceSearchAgent:
     """Minimal API client that searches Confluence pages by CQL."""
 
@@ -182,6 +206,7 @@ class ConfluenceSearchAgent:
             candidate_pool_cap=candidate_pool_cap,
         )
         self._model_summary_cache: dict[tuple[bool, str, str], str | None] = {}
+        self._last_ranking: RankingDiagnostics | None = None
 
         has_bearer_auth = bool(personal_access_token or bearer_token)
         if not has_bearer_auth and not (email and api_token):
@@ -836,8 +861,21 @@ class ConfluenceSearchAgent:
         modified_since: str | None = None,
         modified_before: str | None = None,
     ) -> list[SearchResult]:
+        self._last_ranking = None
         intent = self._query_intent(query)
         if not intent.search_phrase:
+            self._last_ranking = RankingDiagnostics(
+                query=query,
+                intent_label=intent.intent_label,
+                confidence=0.0,
+                low_confidence=True,
+                top_score=0.0,
+                second_score=0.0,
+                score_gap=0.0,
+                keyword_coverage=0.0,
+                scored_count=0,
+                returned_count=0,
+            )
             return []
         requested_limit = max(1, min(int(limit), 50))
         expanded_limit = min(
@@ -952,6 +990,9 @@ class ConfluenceSearchAgent:
             "Verify base URL and PAT scope/permissions."
         )
 
+    def last_ranking(self) -> RankingDiagnostics | None:
+        return self._last_ranking
+
     def _extract_error_detail(self, error: HTTPError) -> str:
         raw = error.read()
         content_type = error.headers.get("Content-Type", "") if error.headers else ""
@@ -1062,6 +1103,80 @@ class ConfluenceSearchAgent:
             # Never let reranking crash the conversation path.
             return 0.0
 
+    @staticmethod
+    def _clamp(value: float, low: float, high: float) -> float:
+        return max(low, min(value, high))
+
+    def confidence_metrics(
+        self, query: str, results: list[SearchResult]
+    ) -> ConfidenceMetrics:
+        if not results:
+            return ConfidenceMetrics(
+                confidence=0.0,
+                top_score=0.0,
+                second_score=0.0,
+                score_gap=0.0,
+                keyword_coverage=0.0,
+                low_confidence=True,
+            )
+
+        intent = self._query_intent(query)
+        scored = [self._result_relevance_score(item, intent) for item in results]
+        top_score = scored[0] if scored else 0.0
+        second_score = scored[1] if len(scored) > 1 else 0.0
+        score_gap = max(0.0, top_score - second_score)
+        coverage = self._keyword_coverage_score(results[0], intent)
+
+        intent_bonus = 0.08 if intent.intent_label != "general" else 0.0
+        raw_confidence = (
+            0.20
+            + min(top_score / 8.0, 0.42)
+            + min(score_gap / 3.0, 0.26)
+            + min(coverage, 0.12)
+            + intent_bonus
+        )
+        confidence = self._clamp(raw_confidence, 0.05, 0.99)
+        return ConfidenceMetrics(
+            confidence=confidence,
+            top_score=top_score,
+            second_score=second_score,
+            score_gap=score_gap,
+            keyword_coverage=coverage,
+            low_confidence=confidence < 0.58,
+        )
+
+    def compute_confidence_from_scores(
+        self, scores: list[float], *, intent: QueryIntent
+    ) -> ConfidenceMetrics:
+        if not scores:
+            return ConfidenceMetrics(
+                confidence=0.0,
+                top_score=0.0,
+                second_score=0.0,
+                score_gap=0.0,
+                keyword_coverage=0.0,
+                low_confidence=True,
+            )
+        top_score = scores[0]
+        second_score = scores[1] if len(scores) > 1 else 0.0
+        score_gap = max(0.0, top_score - second_score)
+        intent_bonus = 0.08 if intent.intent_label != "general" else 0.0
+        raw_confidence = (
+            0.20
+            + min(top_score / 8.0, 0.42)
+            + min(score_gap / 3.0, 0.26)
+            + intent_bonus
+        )
+        confidence = self._clamp(raw_confidence, 0.05, 0.99)
+        return ConfidenceMetrics(
+            confidence=confidence,
+            top_score=top_score,
+            second_score=second_score,
+            score_gap=score_gap,
+            keyword_coverage=0.0,
+            low_confidence=confidence < 0.58,
+        )
+
     def _rank_results_by_intent(
         self,
         results: list[SearchResult],
@@ -1084,10 +1199,15 @@ class ConfluenceSearchAgent:
             ordered = sorted(scored, key=lambda item: (-item[1], item[0]))
             return [item for _, _, item in ordered[:capped_limit]]
 
-        scored = [
-            (idx, self._result_relevance_score(item, intent), item)
-            for idx, item in enumerate(results)
-        ]
+        scored = []
+        for idx, item in enumerate(results):
+            score = self._result_relevance_score(item, intent)
+            scored.append((idx, score, item))
+            # Attach score so conversation/eval layers can inspect confidence cheaply.
+            try:
+                setattr(item, "_relevance_score", float(score))
+            except Exception:
+                pass
         ordered = sorted(scored, key=lambda item: (-item[1], item[0]))
         return [item for _, _, item in ordered[:capped_limit]]
 
@@ -1146,12 +1266,34 @@ class ConfluenceSearchAgent:
                 )
             )
 
-        return self._rank_results_by_intent(
+        ranked = self._rank_results_by_intent(
             items,
             intent,
             final_limit=final_limit,
             use_enhanced_ranker=True,
         )
+        scores: list[float] = []
+        for item in ranked:
+            raw_score = getattr(item, "_relevance_score", None)
+            if isinstance(raw_score, (int, float)):
+                scores.append(float(raw_score))
+            else:
+                scores.append(self._result_relevance_score(item, intent))
+        confidence = self.compute_confidence_from_scores(scores, intent=intent)
+        coverage = self._keyword_coverage_score(ranked[0], intent) if ranked else 0.0
+        self._last_ranking = RankingDiagnostics(
+            query=query,
+            intent_label=intent.intent_label,
+            confidence=confidence.confidence,
+            low_confidence=confidence.low_confidence,
+            top_score=confidence.top_score,
+            second_score=confidence.second_score,
+            score_gap=confidence.score_gap,
+            keyword_coverage=coverage,
+            scored_count=len(items),
+            returned_count=len(ranked),
+        )
+        return ranked
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

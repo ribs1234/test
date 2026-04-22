@@ -154,6 +154,8 @@ submission field.
   - `compare result 1 and 3`
   - `what changed result 2` (compares with the prior result set snapshot)
   - correction feedback such as `that's incorrect` or `that is wrong` (Einstein asks for a refinement or reruns with your correction/filter)
+  - persistent correction memory: once you correct Einstein (for example owner/team, space, exclusions, date scope), those corrections are applied to later searches automatically
+  - `clear corrections` / `forget corrections` to reset learned correction memory
   - `show more`
   - `again`
   - `in ENG space ...`, `in ENG and OPS spaces ...`, or `clear space filter`

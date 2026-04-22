@@ -41,6 +41,11 @@ class ConversationState:
     last_ranking: RankingDiagnostics | None = None
     previous_ranking: RankingDiagnostics | None = None
     clarification_confidence_threshold: float = 0.62
+    correction_query_hints: list[str] = field(default_factory=list)
+    correction_space_keys: list[str] = field(default_factory=list)
+    correction_exclude_terms: list[str] = field(default_factory=list)
+    correction_modified_since: str | None = None
+    correction_modified_before: str | None = None
     pending_clarification_query: str = ""
     pending_clarification_options: list[str] = field(default_factory=list)
 
@@ -74,9 +79,18 @@ class ConfluenceConversationAgent:
             )
 
         self._apply_settings(settings)
-        self._apply_inline_filters(text)
+        if self._is_clear_corrections_request(text):
+            self._clear_learned_corrections()
+            return ConversationTurn(
+                reply=self._speak(
+                    "Cleared learned corrections. I will only use your current message constraints."
+                ),
+                results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
+            )
         if self._is_incorrect_feedback(text):
             return self._incorrect_feedback_turn(text)
+        self._apply_inline_filters(text)
         if self.state.pending_clarification_query and self._is_clarification_response(text):
             refined_query = self._resolve_clarification_query(text)
             if not refined_query:
@@ -245,6 +259,203 @@ class ConfluenceConversationAgent:
             return ""
         return candidate
 
+    @staticmethod
+    def _is_clear_corrections_request(text: str) -> bool:
+        lower = text.strip().lower()
+        if lower in {
+            "clear corrections",
+            "forget corrections",
+            "reset corrections",
+            "remove corrections",
+            "forget correction",
+            "clear correction",
+            "reset correction",
+            "remove correction",
+        }:
+            return True
+        return bool(
+            re.search(
+                r"\b(?:forget|clear|reset|remove)\s+(?:my\s+|learned\s+)?corrections?\b",
+                lower,
+                re.IGNORECASE,
+            )
+        )
+
+    def _clear_learned_corrections(self) -> None:
+        self.state.correction_query_hints = []
+        self.state.correction_space_keys = []
+        self.state.correction_exclude_terms = []
+        self.state.correction_modified_since = None
+        self.state.correction_modified_before = None
+
+    @staticmethod
+    def _dedupe_terms(values: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            cleaned = re.sub(r"\s+", " ", str(item or "")).strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(cleaned)
+        return deduped
+
+    def _remember_query_hint(self, hint: str) -> None:
+        cleaned = re.sub(r"\s+", " ", str(hint or "")).strip(" ,.-:")
+        if not cleaned:
+            return
+        tokens = re.findall(r"[A-Za-z0-9]{2,}", cleaned.lower())
+        if not tokens or len(tokens) > 12:
+            return
+        ignore = {
+            "that",
+            "this",
+            "it",
+            "is",
+            "was",
+            "wrong",
+            "incorrect",
+            "not",
+            "right",
+            "correct",
+            "answer",
+            "response",
+            "result",
+        }
+        if all(token in ignore for token in tokens):
+            return
+        existing_lower = {item.lower() for item in self.state.correction_query_hints}
+        if cleaned.lower() in existing_lower:
+            return
+        self.state.correction_query_hints.append(cleaned)
+        self.state.correction_query_hints = self.state.correction_query_hints[-4:]
+
+    @staticmethod
+    def _extract_owner_correction_hint(text: str) -> str | None:
+        patterns = (
+            r"\bowner(?:ship)?\s*(?:is|=|:)\s+([A-Za-z0-9][A-Za-z0-9&/_\-\s]{1,60})",
+            r"\bowned by\s+([A-Za-z0-9][A-Za-z0-9&/_\-\s]{1,60})",
+            r"\bresponsible(?:\s+team|\s+owner)?\s*(?:is|=|:)\s+([A-Za-z0-9][A-Za-z0-9&/_\-\s]{1,60})",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if not match:
+                continue
+            value = re.sub(r"\s+", " ", match.group(1)).strip(" ,.;:-")
+            if not value:
+                continue
+            return f"owner {value}"
+        return None
+
+    def _remember_corrections_from_feedback(self, text: str, refinement: str) -> None:
+        extracted_space_keys = self._extract_space_keys(text)
+        if extracted_space_keys:
+            self.state.correction_space_keys = extracted_space_keys
+
+        extracted_exclusions = self._extract_exclude_terms(text)
+        if extracted_exclusions:
+            merged_excludes = self.state.correction_exclude_terms + extracted_exclusions
+            self.state.correction_exclude_terms = self._dedupe_terms(merged_excludes)[-6:]
+
+        extracted_dates = self._extract_date_filters(text)
+        if extracted_dates is not None:
+            self.state.correction_modified_since, self.state.correction_modified_before = (
+                extracted_dates
+            )
+
+        owner_hint = self._extract_owner_correction_hint(refinement or text)
+        if owner_hint:
+            self._remember_query_hint(owner_hint)
+        refinement_is_owner_statement = bool(
+            re.search(
+                r"\b(?:owner|ownership|owned by|responsible)\b",
+                refinement or "",
+                re.IGNORECASE,
+            )
+        )
+        if refinement and not (owner_hint and refinement_is_owner_statement):
+            self._remember_query_hint(refinement)
+
+    def _apply_correction_hints_to_query(self, query: str) -> str:
+        query_clean = re.sub(r"\s+", " ", str(query or "")).strip()
+        if not query_clean:
+            return query_clean
+        combined = query_clean
+        combined_lower = combined.lower()
+        for hint in self.state.correction_query_hints:
+            hint_clean = re.sub(r"\s+", " ", hint).strip()
+            if not hint_clean:
+                continue
+            if hint_clean.lower() in combined_lower:
+                continue
+            combined = f"{combined} {hint_clean}".strip()
+            combined_lower = combined.lower()
+        return combined
+
+    def _effective_search_filters(
+        self,
+    ) -> tuple[list[str], str | None, list[str], str | None, str | None]:
+        explicit_space_keys = list(self.state.space_keys)
+        if explicit_space_keys:
+            effective_space_keys = explicit_space_keys
+        elif self.state.space_key:
+            effective_space_keys = [self.state.space_key]
+        else:
+            effective_space_keys = list(self.state.correction_space_keys)
+        effective_space_key = effective_space_keys[0] if effective_space_keys else None
+
+        explicit_excludes = list(self.state.exclude_terms)
+        merged_excludes = explicit_excludes + list(self.state.correction_exclude_terms)
+        effective_excludes = self._dedupe_terms(merged_excludes)
+
+        effective_since = (
+            self.state.modified_since
+            if self.state.modified_since
+            else self.state.correction_modified_since
+        )
+        effective_before = (
+            self.state.modified_before
+            if self.state.modified_before
+            else self.state.correction_modified_before
+        )
+        return (
+            effective_space_keys,
+            effective_space_key,
+            effective_excludes,
+            effective_since,
+            effective_before,
+        )
+
+    def _correction_memory_summary(self) -> str:
+        parts: list[str] = []
+        if self.state.correction_query_hints:
+            parts.append(
+                f"hints: {', '.join(self.state.correction_query_hints[:3])}"
+            )
+        if self.state.correction_space_keys:
+            if len(self.state.correction_space_keys) == 1:
+                parts.append(f"space {self.state.correction_space_keys[0]}")
+            else:
+                parts.append(f"spaces {', '.join(self.state.correction_space_keys[:4])}")
+        if self.state.correction_modified_since and self.state.correction_modified_before:
+            if self.state.correction_modified_since == self.state.correction_modified_before:
+                parts.append(f"date {self.state.correction_modified_since}")
+            else:
+                parts.append(
+                    "modified "
+                    f"{self.state.correction_modified_since} to {self.state.correction_modified_before}"
+                )
+        elif self.state.correction_modified_since:
+            parts.append(f"modified since {self.state.correction_modified_since}")
+        elif self.state.correction_modified_before:
+            parts.append(f"modified before {self.state.correction_modified_before}")
+        if self.state.correction_exclude_terms:
+            parts.append(f"excluding {', '.join(self.state.correction_exclude_terms[:4])}")
+        return "; ".join(parts)
+
     def _contains_filter_directive(self, text: str) -> bool:
         lower = text.lower()
         if self._extract_space_keys(text):
@@ -275,8 +486,9 @@ class ConfluenceConversationAgent:
             )
 
         refinement = self._extract_incorrect_refinement(text)
+        self._remember_corrections_from_feedback(text, refinement)
         if refinement:
-            revised_query = f"{self.state.last_query} {refinement}".strip()
+            revised_query = self.state.last_query
             return self._search_turn(
                 revised_query,
                 from_more=False,
@@ -916,6 +1128,14 @@ class ConfluenceConversationAgent:
         prior_results = list(self.state.last_results)
         prior_page_ids = list(self.state.last_page_ids)
         prior_query = self.state.last_query
+        effective_query = self._apply_correction_hints_to_query(query)
+        (
+            effective_space_keys,
+            effective_space_key,
+            effective_exclude_terms,
+            effective_modified_since,
+            effective_modified_before,
+        ) = self._effective_search_filters()
         agent = ConfluenceSearchAgent(
             base_url=self.state.base_url,
             personal_access_token=self.state.personal_access_token,
@@ -923,13 +1143,13 @@ class ConfluenceConversationAgent:
             api_token=self.state.api_token,
         )
         results = agent.search(
-            query=query,
+            query=effective_query,
             limit=self.state.limit,
-            space_key=self.state.space_key,
-            space_keys=self.state.space_keys,
-            exclude_terms=self.state.exclude_terms,
-            modified_since=self.state.modified_since,
-            modified_before=self.state.modified_before,
+            space_key=effective_space_key,
+            space_keys=effective_space_keys,
+            exclude_terms=effective_exclude_terms,
+            modified_since=effective_modified_since,
+            modified_before=effective_modified_before,
         )
         ranking = agent.last_ranking()
         page_ids = [item.page_id for item in results]
@@ -942,8 +1162,15 @@ class ConfluenceConversationAgent:
         self.state.last_page_ids = page_ids
         self.state.last_ranking = ranking
 
-        intent = ConfluenceSearchAgent._query_intent(query)
-        filter_scope = self._active_filter_scope()
+        intent = ConfluenceSearchAgent._query_intent(effective_query)
+        filter_scope = self._active_filter_scope(
+            space_keys=effective_space_keys,
+            space_key=effective_space_key,
+            modified_since=effective_modified_since,
+            modified_before=effective_modified_before,
+            exclude_terms=effective_exclude_terms,
+        )
+        correction_scope = self._correction_memory_summary()
         if not results:
             self._clear_pending_clarification()
             return ConversationTurn(
@@ -955,7 +1182,7 @@ class ConfluenceConversationAgent:
                 page_ids=[],
             )
         if allow_clarification and self._should_ask_clarification(
-            query=query, intent=intent, results=results, ranking=ranking
+            query=effective_query, intent=intent, results=results, ranking=ranking
         ):
             return self._clarification_turn(
                 query=query,
@@ -981,7 +1208,8 @@ class ConfluenceConversationAgent:
                 f"Sources:\n{sources}\n\n"
                 "Search details:\n"
                 f"- Results: {len(results)}{filter_scope}\n"
-                f"- Intent: {self._intent_label(intent)}\n\n"
+                f"- Intent: {self._intent_label(intent)}\n"
+                f"{('- Learned corrections: ' + correction_scope + chr(10)) if correction_scope else ''}\n"
                 f"- Confidence: {self._format_confidence_percent((ranking.confidence if ranking else 0.0))}\n\n"
                 "Next actions:\n"
                 "- summarize result 2\n"
@@ -1056,30 +1284,49 @@ class ConfluenceConversationAgent:
             lines.append(f"[{idx}] {item.title} - {item.url or 'No link available.'}")
         return "\n".join(lines)
 
-    def _active_filter_scope(self) -> str:
+    def _active_filter_scope(
+        self,
+        *,
+        space_keys: list[str] | None = None,
+        space_key: str | None = None,
+        modified_since: str | None = None,
+        modified_before: str | None = None,
+        exclude_terms: list[str] | None = None,
+    ) -> str:
+        resolved_space_keys = list(space_keys) if space_keys is not None else list(self.state.space_keys)
+        resolved_space_key = space_key if space_key is not None else self.state.space_key
+        resolved_modified_since = (
+            modified_since if modified_since is not None else self.state.modified_since
+        )
+        resolved_modified_before = (
+            modified_before if modified_before is not None else self.state.modified_before
+        )
+        resolved_exclude_terms = (
+            list(exclude_terms) if exclude_terms is not None else list(self.state.exclude_terms)
+        )
         parts: list[str] = []
-        if self.state.space_keys:
-            if len(self.state.space_keys) == 1:
-                parts.append(f"space {self.state.space_keys[0]}")
+        if resolved_space_keys:
+            if len(resolved_space_keys) == 1:
+                parts.append(f"space {resolved_space_keys[0]}")
             else:
-                parts.append(f"spaces {', '.join(self.state.space_keys)}")
-        elif self.state.space_key:
-            parts.append(f"space {self.state.space_key}")
+                parts.append(f"spaces {', '.join(resolved_space_keys)}")
+        elif resolved_space_key:
+            parts.append(f"space {resolved_space_key}")
 
-        if self.state.modified_since and self.state.modified_before:
-            if self.state.modified_since == self.state.modified_before:
-                parts.append(f"date {self.state.modified_since}")
+        if resolved_modified_since and resolved_modified_before:
+            if resolved_modified_since == resolved_modified_before:
+                parts.append(f"date {resolved_modified_since}")
             else:
                 parts.append(
-                    f"modified {self.state.modified_since} to {self.state.modified_before}"
+                    f"modified {resolved_modified_since} to {resolved_modified_before}"
                 )
-        elif self.state.modified_since:
-            parts.append(f"modified since {self.state.modified_since}")
-        elif self.state.modified_before:
-            parts.append(f"modified before {self.state.modified_before}")
+        elif resolved_modified_since:
+            parts.append(f"modified since {resolved_modified_since}")
+        elif resolved_modified_before:
+            parts.append(f"modified before {resolved_modified_before}")
 
-        if self.state.exclude_terms:
-            parts.append(f"excluding {', '.join(self.state.exclude_terms[:4])}")
+        if resolved_exclude_terms:
+            parts.append(f"excluding {', '.join(resolved_exclude_terms[:4])}")
 
         if not parts:
             return ""

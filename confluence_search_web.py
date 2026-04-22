@@ -338,22 +338,8 @@ INDEX_HTML = """<!doctype html>
             <input id="api-token" name="api_token" type="password" />
           </label>
 
-          <label class="full">
-            Search Query
-            <input id="query" name="query" placeholder="vault rotation runbook" required />
-          </label>
-
-          <label>
-            Space Key (optional)
-            <input id="space-key" name="space_key" placeholder="ENG" />
-          </label>
-          <label>
-            Limit
-            <input id="limit" name="limit" type="number" min="1" max="50" value="10" />
-          </label>
-
           <span class="hint full">
-            Credentials are used only for live API calls and not persisted. Ask Einstein in the chat box below.
+            Credentials are used only for live API calls and not persisted. Einstein infers space and result count from your question (for example: "top 5 in ENG space").
           </span>
         </div>
       </section>
@@ -463,8 +449,6 @@ INDEX_HTML = """<!doctype html>
           personal_access_token: document.getElementById("personal-access-token").value,
           email: document.getElementById("email").value.trim(),
           api_token: document.getElementById("api-token").value,
-          space_key: document.getElementById("space-key").value.trim() || null,
-          limit: Number(document.getElementById("limit").value || 10),
         };
       }
 

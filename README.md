@@ -74,8 +74,6 @@ http://127.0.0.1:8000
 
 In the page, enter:
 - Confluence web address (example: `https://your-domain.atlassian.net`)
-- Query text
-- Optional space key / limit
 - Auth:
   - **Personal Access Token (PAT)**, or
   - Email + API token, or
@@ -98,6 +96,10 @@ submission field.
   - `show more`
   - `again`
   - `in ENG space ...` or `clear space filter`
+  - `top 5 ...`, `show 12 results ...`, `first 3 ...` to set result count from the question
+
+Einstein infers both space filters and result count from the chat message, so
+there are no dedicated **Space Key** or **Limit** UI fields.
 
 - Conversation controls:
   - **Clear Conversation** resets the in-session chat state and prior results

@@ -15,6 +15,7 @@ from confluence_search_agent import (
 )
 
 BOT_NAME = "Einstein"
+DEFAULT_LIMIT = 10
 
 
 @dataclass
@@ -24,7 +25,7 @@ class ConversationState:
     email: str | None = None
     api_token: str | None = None
     space_key: str | None = None
-    limit: int = 10
+    limit: int = DEFAULT_LIMIT
     last_query: str = ""
     last_results: list[SearchResult] = field(default_factory=list)
 
@@ -141,16 +142,54 @@ class ConfluenceConversationAgent:
         lower = text.lower()
         if any(phrase in lower for phrase in ("all spaces", "any space", "clear space filter")):
             self.state.space_key = None
-            return
 
         in_space = re.search(r"\bin\s+([A-Za-z][A-Za-z0-9_]{1,15})\s+space\b", text, re.IGNORECASE)
         if in_space:
             self.state.space_key = in_space.group(1).upper()
-            return
+        else:
+            explicit_space = re.search(
+                r"\bspace\s+([A-Za-z][A-Za-z0-9_]{1,15})\b", text, re.IGNORECASE
+            )
+            if explicit_space:
+                self.state.space_key = explicit_space.group(1).upper()
 
-        explicit_space = re.search(r"\bspace\s+([A-Za-z][A-Za-z0-9_]{1,15})\b", text, re.IGNORECASE)
-        if explicit_space:
-            self.state.space_key = explicit_space.group(1).upper()
+        # Let Einstein infer result count directly from the user's question.
+        if any(
+            phrase in lower
+            for phrase in ("default result count", "reset result count", "default limit")
+        ):
+            self.state.limit = DEFAULT_LIMIT
+        else:
+            inferred_limit = self._infer_limit_from_text(text)
+            if inferred_limit is not None:
+                self.state.limit = inferred_limit
+
+    @staticmethod
+    def _infer_limit_from_text(text: str) -> int | None:
+        lower = text.lower()
+        if (
+            re.search(r"\bshow all\b", lower)
+            or re.search(r"\ball results?\b", lower)
+            or re.search(r"\ball pages?\b", lower)
+        ):
+            return 50
+
+        patterns = (
+            r"\btop\s+(\d{1,2})\b",
+            r"\bfirst\s+(\d{1,2})\b",
+            r"\bshow\s+(\d{1,2})\s+(?:results?|pages?)\b",
+            r"\b(\d{1,2})\s+(?:results?|pages?)\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, lower)
+            if not match:
+                continue
+            try:
+                count = int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+            return max(1, min(count, 50))
+        return None
 
     @staticmethod
     def _is_more_request(text: str) -> bool:

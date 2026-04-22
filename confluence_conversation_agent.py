@@ -256,7 +256,7 @@ class ConfluenceConversationAgent:
             api_token=self.state.api_token,
         )
         results = agent.search(query=query, limit=self.state.limit, space_key=self.state.space_key)
-        page_ids = agent.last_result_page_ids()
+        page_ids = [item.page_id for item in results]
         self.state.last_query = query
         self.state.last_results = results
         self.state.last_page_ids = page_ids

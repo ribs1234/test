@@ -270,11 +270,11 @@ class ConfluenceConversationAgent:
         likely_link = best.url or "No link available."
         return ConversationTurn(
             reply=self._speak(
-                f"{mode}Answer: {answer} "
-                f"Most likely result link: {likely_link}. "
-                f"Result summary: {result_summary} "
+                f"{mode}Answer: {answer}\n"
+                f"Most likely result link: {likely_link}\n"
+                f"Result summary:\n{result_summary}\n"
                 f"I found {len(results)} page(s){scope} for '{query}' "
-                f"(intent: {self._intent_label(intent)}). "
+                f"(intent: {self._intent_label(intent)}).\n"
                 "You can ask 'summarize result 2' or 'show more'."
             ),
             results=results,
@@ -310,7 +310,7 @@ class ConfluenceConversationAgent:
         for idx, item in enumerate(results[:max_items], start=1):
             snippet = self._shorten(item.summary, max_len=110)
             parts.append(f"{idx}) {item.title} - {snippet}")
-        return " ".join(parts)
+        return "\n".join(parts)
 
     def _result_detail_turn(self, index: int) -> ConversationTurn:
         if not self.state.last_results:

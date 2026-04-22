@@ -230,6 +230,7 @@ INDEX_HTML = """<!doctype html>
         border-radius: 10px;
         line-height: 1.45;
         font-size: 0.92rem;
+        white-space: pre-wrap;
       }
       .bubble.user {
         background: rgba(0, 163, 224, 0.12);

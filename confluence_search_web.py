@@ -15,6 +15,7 @@ from typing import Any
 from confluence_conversation_agent import (
     ConfluenceConversationAgent,
     ConversationState,
+    serialize_conversation_state,
     serialize_results,
 )
 from confluence_search_agent import ConfluenceSearchAgent, ConfluenceSearchError
@@ -433,6 +434,88 @@ INDEX_HTML = """<!doctype html>
         opacity: 0.62;
         cursor: not-allowed;
       }
+
+      .assistant-feedback-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        margin: 0.35rem 0 0.2rem;
+      }
+      .feedback-chip {
+        border-radius: 999px;
+        border: 1px solid rgba(77, 20, 140, 0.24);
+        background: rgba(77, 20, 140, 0.08);
+        color: var(--exp-violet);
+        font-size: 0.74rem;
+        font-weight: 700;
+        padding: 0.26rem 0.62rem;
+        box-shadow: none;
+      }
+      .feedback-chip:hover {
+        filter: none;
+        background: rgba(77, 20, 140, 0.16);
+      }
+      .memory-panel {
+        margin: 0.45rem 0 0.2rem;
+        padding: 0.6rem 0.65rem;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface-soft);
+      }
+      .memory-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-bottom: 0.35rem;
+      }
+      .memory-title {
+        margin: 0;
+        font-size: 0.76rem;
+        color: var(--muted);
+        font-weight: 700;
+      }
+      .memory-subtle {
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+      .memory-pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+      .memory-pill {
+        border: 1px solid rgba(0, 47, 135, 0.2);
+        border-radius: 999px;
+        background: #eef3ff;
+        color: var(--exp-blue);
+        font-size: 0.72rem;
+        font-weight: 600;
+        padding: 0.2rem 0.45rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.28rem;
+      }
+      .memory-pill button {
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font-size: 0.72rem;
+        padding: 0;
+        margin: 0;
+        line-height: 1;
+        box-shadow: none;
+      }
+      .memory-controls {
+        margin-top: 0.35rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+      .memory-empty {
+        font-size: 0.76rem;
+        color: var(--muted);
+      }
       @media (max-width: 760px) {
         .settings-grid {
           grid-template-columns: 1fr;
@@ -534,6 +617,19 @@ INDEX_HTML = """<!doctype html>
             <button type="button" class="chip-btn" data-message="top 5 in ENG and OPS spaces">Top 5 in ENG + OPS</button>
             <button type="button" class="chip-btn" data-message="summarize result 1">Summarize #1</button>
           </div>
+          <div id="memory-panel" class="memory-panel">
+            <div class="memory-head">
+              <h3 class="memory-title">Learned corrections</h3>
+              <span id="memory-summary" class="memory-subtle">none</span>
+            </div>
+            <div id="memory-pills" class="memory-pills">
+              <span class="memory-empty">No corrections saved yet.</span>
+            </div>
+            <div class="memory-controls">
+              <button type="button" class="tiny-btn" id="undo-correction-btn">Undo last correction</button>
+              <button type="button" class="tiny-btn" id="clear-corrections-btn">Clear corrections</button>
+            </div>
+          </div>
           <div id="chat-log" aria-live="polite"></div>
           <form id="chat-form" class="chat-form">
             <input
@@ -581,6 +677,10 @@ INDEX_HTML = """<!doctype html>
       const promptChipContainerEl = document.getElementById("prompt-chips");
       const resultsMetaEl = document.getElementById("results-meta");
       const chatSendBtnEl = document.getElementById("chat-send-btn");
+      const memoryPillsEl = document.getElementById("memory-pills");
+      const memorySummaryEl = document.getElementById("memory-summary");
+      const undoCorrectionBtnEl = document.getElementById("undo-correction-btn");
+      const clearCorrectionsBtnEl = document.getElementById("clear-corrections-btn");
       const settingsEls = {
         base_url: document.getElementById("base-url"),
         personal_access_token: document.getElementById("personal-access-token"),
@@ -591,6 +691,7 @@ INDEX_HTML = """<!doctype html>
       const chatTranscript = [];
       let lastRenderedResults = [];
       let settingsLoadedFromStorage = false;
+      let lastConversationMeta = null;
 
       function status(message, tone = "info") {
         statusEl.textContent = String(message || "");
@@ -708,6 +809,123 @@ INDEX_HTML = """<!doctype html>
         const parsed = new Date(isoValue);
         if (Number.isNaN(parsed.valueOf())) return isoValue;
         return parsed.toLocaleString();
+      }
+
+      function parseActionFromMemoryToken(token) {
+        const value = String(token || "").trim();
+        if (!value) return null;
+        if (/^space\b/i.test(value)) return "remove space correction";
+        if (/^excluding\b/i.test(value)) return "remove exclude correction";
+        if (/^modified\b|^date\b/i.test(value)) return "remove date correction";
+        if (/^hints?:\\s*/i.test(value)) return "remove hint correction";
+        if (/^hint\b/i.test(value)) return "remove hint correction";
+        return null;
+      }
+
+      function renderMemoryPanel(meta) {
+        const correctionMemory =
+          meta && typeof meta === "object" && meta.correction_memory &&
+          typeof meta.correction_memory === "object"
+            ? meta.correction_memory
+            : null;
+        const summary = correctionMemory && correctionMemory.summary
+          ? String(correctionMemory.summary)
+          : "";
+        memorySummaryEl.textContent = summary || "none";
+        memoryPillsEl.textContent = "";
+
+        const pills = [];
+        if (correctionMemory) {
+          for (const hint of correctionMemory.query_hints || []) {
+            pills.push(`hint: ${hint}`);
+          }
+          for (const key of correctionMemory.space_keys || []) {
+            pills.push(`space ${key}`);
+          }
+          for (const term of correctionMemory.exclude_terms || []) {
+            pills.push(`excluding ${term}`);
+          }
+          if (correctionMemory.modified_since && correctionMemory.modified_before) {
+            pills.push(
+              correctionMemory.modified_since === correctionMemory.modified_before
+                ? `date ${correctionMemory.modified_since}`
+                : `modified ${correctionMemory.modified_since} to ${correctionMemory.modified_before}`
+            );
+          } else if (correctionMemory.modified_since) {
+            pills.push(`modified since ${correctionMemory.modified_since}`);
+          } else if (correctionMemory.modified_before) {
+            pills.push(`modified before ${correctionMemory.modified_before}`);
+          }
+        }
+
+        if (!pills.length) {
+          const empty = document.createElement("span");
+          empty.className = "memory-empty";
+          empty.textContent = "No corrections saved yet.";
+          memoryPillsEl.appendChild(empty);
+          return;
+        }
+
+        for (const token of pills) {
+          const pill = document.createElement("span");
+          pill.className = "memory-pill";
+          const label = document.createElement("span");
+          label.textContent = token;
+          pill.appendChild(label);
+
+          const actionMessage = parseActionFromMemoryToken(token);
+          if (actionMessage) {
+            const removeBtn = document.createElement("button");
+            removeBtn.type = "button";
+            removeBtn.className = "memory-remove-btn";
+            removeBtn.dataset.message = actionMessage;
+            removeBtn.textContent = "x";
+            removeBtn.title = `Remove ${token}`;
+            pill.appendChild(removeBtn);
+          }
+          memoryPillsEl.appendChild(pill);
+        }
+      }
+
+      function renderAssistantFeedback(meta) {
+        const actions =
+          meta && typeof meta === "object" && Array.isArray(meta.feedback_actions)
+            ? meta.feedback_actions
+            : [];
+        if (!actions.length || !chatLogEl.lastElementChild) return;
+        const bubble = chatLogEl.lastElementChild;
+        if (!(bubble instanceof HTMLElement) || !bubble.classList.contains("assistant")) return;
+
+        const strip = bubble.querySelector(".assistant-feedback-chips");
+        if (strip) strip.remove();
+        const wrap = document.createElement("div");
+        wrap.className = "assistant-feedback-chips";
+
+        const preferred = ["correct", "not-quite", "eng-only", "exclude-legacy", "last-30-days"];
+        const map = new Map(actions.map((a) => [String(a.id || ""), a]));
+        for (const key of preferred) {
+          const item = map.get(key);
+          if (!item) continue;
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "feedback-chip";
+          btn.dataset.message = `ui:${item.id}`;
+          btn.textContent = String(item.label || item.id || "Action");
+          wrap.appendChild(btn);
+        }
+        if (!wrap.childElementCount) return;
+
+        const label = document.createElement("span");
+        label.className = "hint";
+        label.textContent = "Did I get this right?";
+        bubble.appendChild(label);
+        bubble.appendChild(wrap);
+      }
+
+      function applyConversationMeta(meta) {
+        lastConversationMeta = meta && typeof meta === "object" ? meta : null;
+        renderMemoryPanel(lastConversationMeta);
+        renderAssistantFeedback(lastConversationMeta);
       }
 
       function renderResults(items) {
@@ -852,6 +1070,7 @@ INDEX_HTML = """<!doctype html>
           }
           appendChatBubble("assistant", data.reply || "Done.");
           renderResults(data.results || []);
+          applyConversationMeta(data.meta || null);
           status("Conversation updated.", "ok");
         } catch (err) {
           appendChatBubble("assistant", err.message || "Conversation request failed.");
@@ -922,6 +1141,7 @@ INDEX_HTML = """<!doctype html>
           resultsEl.textContent = "";
           resultsMetaEl.textContent = "No results yet.";
           appendChatBubble("assistant", data.reply || "Conversation cleared.");
+          applyConversationMeta(data.meta || null);
           status("Conversation cleared.", "ok");
         } catch (err) {
           status(err.message || "Could not clear conversation.", "error");
@@ -965,6 +1185,34 @@ INDEX_HTML = """<!doctype html>
         await sendChatMessage(message, { echoUser: true });
       });
 
+      chatLogEl.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const button = target.closest(".feedback-chip");
+        if (!(button instanceof HTMLButtonElement)) return;
+        const message = String(button.dataset.message || "").trim();
+        if (!message) return;
+        await sendChatMessage(message, { echoUser: false });
+      });
+
+      memoryPillsEl.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const button = target.closest(".memory-remove-btn");
+        if (!(button instanceof HTMLButtonElement)) return;
+        const message = String(button.dataset.message || "").trim();
+        if (!message) return;
+        await sendChatMessage(message, { echoUser: false });
+      });
+
+      undoCorrectionBtnEl.addEventListener("click", async () => {
+        await sendChatMessage("undo correction", { echoUser: false });
+      });
+
+      clearCorrectionsBtnEl.addEventListener("click", async () => {
+        await sendChatMessage("clear corrections", { echoUser: false });
+      });
+
       loadSettingsFromStorage();
       for (const key of Object.keys(settingsEls)) {
         settingsEls[key].addEventListener("change", saveSettingsToStorage);
@@ -973,10 +1221,11 @@ INDEX_HTML = """<!doctype html>
         settingsEls[key].addEventListener("blur", saveSettingsToStorage);
       }
       status("Ready. Ask Einstein a question to begin.", "info");
+      applyConversationMeta(null);
 
       appendChatBubble(
         "assistant",
-        "Einstein here. Ask a question like 'who owns vault oncall?' then follow up with 'summarize result 2', 'compare #1 and #3', or 'show more'. I can also apply filters like 'in ENG and OPS spaces', 'since 2026-01-01', or 'excluding draft'."
+        "Einstein here. Ask a question like 'who owns vault oncall?' then follow up with 'summarize result 2', 'compare #1 and #3', or 'show more'. After each answer, use the quick 'Did I get this right?' chips to refine instantly."
       );
     </script>
   </body>
@@ -1052,7 +1301,19 @@ class SearchHandler(BaseHTTPRequestHandler):
             )
             self._write_json({"results": [result.__dict__ for result in results]})
         except (ValueError, ConfluenceSearchError) as exc:
-            self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            detail = str(exc)
+            friendly = detail
+            lower = detail.lower()
+            if "all confluence api path attempts failed" in lower or "html instead of json" in lower:
+                friendly = (
+                    "Could not reach Confluence API with the current URL/auth settings. "
+                    "Check base URL and token/SSO access, then try again."
+                )
+            elif "authentication" in lower or "401" in lower or "403" in lower:
+                friendly = (
+                    "Authentication failed for Confluence. Re-enter a valid PAT or email/API token."
+                )
+            self._write_json({"error": friendly}, status=HTTPStatus.BAD_REQUEST)
         except Exception:
             self._write_json(
                 {"error": "Unexpected server error while searching Confluence."},
@@ -1081,10 +1342,23 @@ class SearchHandler(BaseHTTPRequestHandler):
                 {
                     "reply": turn.reply,
                     "results": serialize_results(turn.results),
+                    "meta": turn.metadata or serialize_conversation_state(session_state),
                 }
             )
         except (ValueError, ConfluenceSearchError) as exc:
-            self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            detail = str(exc)
+            friendly = detail
+            lower = detail.lower()
+            if "all confluence api path attempts failed" in lower or "html instead of json" in lower:
+                friendly = (
+                    "Could not reach Confluence API with the current URL/auth settings. "
+                    "Check base URL and token/SSO access, then try again."
+                )
+            elif "authentication" in lower or "401" in lower or "403" in lower:
+                friendly = (
+                    "Authentication failed for Confluence. Re-enter a valid PAT or email/API token."
+                )
+            self._write_json({"error": friendly}, status=HTTPStatus.BAD_REQUEST)
         except Exception:
             self._write_json(
                 {"error": "Unexpected server error while handling conversation."},
@@ -1099,7 +1373,12 @@ class SearchHandler(BaseHTTPRequestHandler):
         session_state.previous_query = ""
         session_state.previous_results = []
         session_state.previous_page_ids = []
-        self._write_json({"reply": "Einstein: Conversation cleared."})
+        self._write_json(
+            {
+                "reply": "Einstein: Conversation cleared.",
+                "meta": serialize_conversation_state(session_state),
+            }
+        )
 
     def _read_json_payload(self) -> dict[str, Any] | None:
         try:

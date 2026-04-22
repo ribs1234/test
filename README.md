@@ -156,6 +156,8 @@ submission field.
   - correction feedback such as `that's incorrect` or `that is wrong` (Einstein asks for a refinement or reruns with your correction/filter)
   - persistent correction memory: once you correct Einstein (for example owner/team, space, exclusions, date scope), those corrections are applied to later searches automatically
   - `clear corrections` / `forget corrections` to reset learned correction memory
+  - `undo correction` / `undo last correction` to roll back the most recent learned correction
+  - `remove space correction`, `remove exclude correction`, `remove date correction`, or `remove hint correction`
   - `show more`
   - `again`
   - `in ENG space ...`, `in ENG and OPS spaces ...`, or `clear space filter`
@@ -176,6 +178,13 @@ Einstein responses are now source-grounded:
 - Responses are sectioned for readability (Direct answer, Top matches, Sources, Next actions)
 - Search diagnostics include confidence scoring; low confidence can trigger
   clarification instead of guessing.
+- After each assistant answer, Einstein shows inline **“Did I get this right?”**
+  chips (for example: **Correct**, **Not quite**, **Use ENG only**,
+  **Exclude legacy**, **Last 30 days**) for one-click refinement.
+- The chat panel shows active learned corrections as removable pills, plus
+  **Undo last correction** and **Clear corrections** actions.
+- Conversation/API errors now include friendlier guidance when auth/SSO blocks
+  the Confluence REST call (for example, URL/auth token checks).
 
 The results panel also includes per-result quick actions:
 - **Explain** -> sends `summarize result X`

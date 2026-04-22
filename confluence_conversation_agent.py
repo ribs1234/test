@@ -46,6 +46,7 @@ class ConversationState:
     correction_exclude_terms: list[str] = field(default_factory=list)
     correction_modified_since: str | None = None
     correction_modified_before: str | None = None
+    correction_history: list[dict[str, Any]] = field(default_factory=list)
     pending_clarification_query: str = ""
     pending_clarification_options: list[str] = field(default_factory=list)
 
@@ -55,6 +56,7 @@ class ConversationTurn:
     reply: str
     results: list[SearchResult]
     page_ids: list[str | None] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class ConfluenceConversationAgent:
@@ -87,7 +89,46 @@ class ConfluenceConversationAgent:
                 ),
                 results=self.state.last_results,
                 page_ids=self.state.last_page_ids,
+                metadata=self._conversation_metadata(),
             )
+
+        quick_action = self._apply_quick_feedback_action(text)
+        if quick_action == "correct":
+            return self._feedback_ack_turn("correct")
+        if quick_action == "not-quite":
+            return self._incorrect_feedback_turn("that is incorrect")
+        if quick_action == "eng-only":
+            return self._incorrect_feedback_turn("that is incorrect in ENG space")
+        if quick_action == "exclude-legacy":
+            return self._incorrect_feedback_turn("that is incorrect excluding legacy")
+        if quick_action == "last-30-days":
+            return self._incorrect_feedback_turn("that is incorrect last 30 days")
+        if quick_action == "explain-confidence":
+            return self._explain_confidence_turn()
+        if quick_action == "why-this-answer":
+            return self._why_this_answer_turn()
+        if quick_action == "undo-correction":
+            return self._undo_correction_turn()
+        if quick_action == "clear-corrections":
+            self._clear_learned_corrections()
+            return ConversationTurn(
+                reply=self._speak("Cleared learned corrections."),
+                results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
+                metadata=self._conversation_metadata(),
+            )
+
+        if self._is_feedback_acknowledgement(text):
+            return self._feedback_ack_turn(text)
+        if self._is_remove_correction_request(text):
+            return self._remove_correction_turn(text)
+        if self._is_undo_correction_request(text):
+            return self._undo_correction_turn()
+        if self._is_explain_confidence_request(text):
+            return self._explain_confidence_turn()
+        if self._is_why_answer_request(text):
+            return self._why_this_answer_turn()
+
         if self._is_incorrect_feedback(text):
             return self._incorrect_feedback_turn(text)
         self._apply_inline_filters(text)
@@ -287,6 +328,268 @@ class ConfluenceConversationAgent:
         self.state.correction_exclude_terms = []
         self.state.correction_modified_since = None
         self.state.correction_modified_before = None
+        self.state.correction_history = []
+        self.state.space_key = None
+        self.state.space_keys = []
+        self.state.exclude_terms = []
+        self.state.modified_since = None
+        self.state.modified_before = None
+
+
+    @staticmethod
+    def _is_feedback_acknowledgement(text: str) -> bool:
+        lower = text.strip().lower()
+        return lower in {
+            "correct",
+            "looks right",
+            "looks good",
+            "that is right",
+            "that's right",
+            "yes",
+            "yes that's right",
+            "yes, that's right",
+            "exactly",
+            "thanks",
+            "thank you",
+            "not quite",
+            "not exactly",
+            "still wrong",
+        }
+
+    @staticmethod
+    def _is_not_quite_feedback(text: str) -> bool:
+        lower = text.strip().lower()
+        return lower in {
+            "not quite",
+            "not exactly",
+            "still wrong",
+            "close but no",
+            "close, but no",
+            "not really",
+        }
+
+    @staticmethod
+    def _is_remove_correction_request(text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:remove|delete|drop)\s+(?:correction|hint|exclude|space|date|owner|team)\b",
+                text.strip().lower(),
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _is_undo_correction_request(text: str) -> bool:
+        lower = text.strip().lower()
+        if lower in {"undo correction", "undo last correction", "undo"}:
+            return True
+        return bool(
+            re.search(
+                r"\bundo(?:\s+last)?\s+corrections?\b",
+                lower,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _is_explain_confidence_request(text: str) -> bool:
+        lower = text.strip().lower()
+        return bool(
+            re.search(
+                r"\b(?:explain|show)\s+(?:confidence|score|why confidence)\b",
+                lower,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _is_why_answer_request(text: str) -> bool:
+        lower = text.strip().lower()
+        return bool(
+            re.search(
+                r"\b(?:why this answer|why this result|why this page|why did you choose)\b",
+                lower,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _normalize_removal_target(text: str) -> str:
+        lower = text.lower()
+        if re.search(r"\b(?:owner|team|hint|query)\b", lower):
+            return "hints"
+        if re.search(r"\bspace\b", lower):
+            return "space"
+        if re.search(r"\bexclude|excluding|term|terms\b", lower):
+            return "exclude"
+        if re.search(r"\bdate|since|before|after|range\b", lower):
+            return "date"
+        return "all"
+
+    def _remove_correction_turn(self, text: str) -> ConversationTurn:
+        target = self._normalize_removal_target(text)
+        removed_any = False
+        if target in {"hints", "all"} and self.state.correction_query_hints:
+            self.state.correction_query_hints = []
+            removed_any = True
+        if target in {"space", "all"} and self.state.correction_space_keys:
+            self.state.correction_space_keys = []
+            removed_any = True
+        if target in {"exclude", "all"} and self.state.correction_exclude_terms:
+            self.state.correction_exclude_terms = []
+            removed_any = True
+        if target in {"date", "all"} and (
+            self.state.correction_modified_since or self.state.correction_modified_before
+        ):
+            self.state.correction_modified_since = None
+            self.state.correction_modified_before = None
+            removed_any = True
+        if not removed_any:
+            return ConversationTurn(
+                reply=self._speak("I could not find a matching learned correction to remove."),
+                results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
+                metadata=self._conversation_metadata(),
+            )
+        self.state.correction_history.append({"action": "remove", "target": target})
+        return ConversationTurn(
+            reply=self._speak("Removed the requested learned correction."),
+            results=self.state.last_results,
+            page_ids=self.state.last_page_ids,
+            metadata=self._conversation_metadata(),
+        )
+
+    def _undo_correction_turn(self) -> ConversationTurn:
+        if self.state.correction_query_hints:
+            removed = self.state.correction_query_hints.pop()
+            return ConversationTurn(
+                reply=self._speak(f"Undid correction hint '{removed}'."),
+                results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
+                metadata=self._conversation_metadata(),
+            )
+        if self.state.correction_exclude_terms:
+            removed = self.state.correction_exclude_terms.pop()
+            return ConversationTurn(
+                reply=self._speak(f"Undid exclusion correction '{removed}'."),
+                results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
+                metadata=self._conversation_metadata(),
+            )
+        if self.state.correction_space_keys:
+            self.state.correction_space_keys = []
+            return ConversationTurn(
+                reply=self._speak("Undid learned space correction."),
+                results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
+                metadata=self._conversation_metadata(),
+            )
+        if self.state.correction_modified_since or self.state.correction_modified_before:
+            self.state.correction_modified_since = None
+            self.state.correction_modified_before = None
+            return ConversationTurn(
+                reply=self._speak("Undid learned date correction."),
+                results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
+                metadata=self._conversation_metadata(),
+            )
+        return ConversationTurn(
+            reply=self._speak("There is no learned correction to undo yet."),
+            results=self.state.last_results,
+            page_ids=self.state.last_page_ids,
+            metadata=self._conversation_metadata(),
+        )
+
+    def _explain_confidence_turn(self) -> ConversationTurn:
+        ranking = self.state.last_ranking
+        if ranking is None:
+            return ConversationTurn(
+                reply=self._speak(
+                    "I do not have a recent confidence score yet. Ask a search question first."
+                ),
+                results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
+                metadata=self._conversation_metadata(),
+            )
+        guidance = (
+            "Low confidence usually means close contenders or weak keyword overlap."
+            if ranking.low_confidence
+            else "Confidence is reasonably strong for the top-ranked match."
+        )
+        return ConversationTurn(
+            reply=self._speak(
+                "Confidence details:\n"
+                f"- Confidence: {self._format_confidence_percent(ranking.confidence)}\n"
+                f"- Top score: {ranking.top_score:.2f}\n"
+                f"- Second score: {ranking.second_score:.2f}\n"
+                f"- Score gap: {ranking.score_gap:.2f}\n"
+                f"- Keyword coverage: {ranking.keyword_coverage:.2f}\n"
+                f"- Guidance: {guidance}"
+            ),
+            results=self.state.last_results,
+            page_ids=self.state.last_page_ids,
+            metadata=self._conversation_metadata(),
+        )
+
+    def _why_this_answer_turn(self) -> ConversationTurn:
+        if not self.state.last_results:
+            return ConversationTurn(
+                reply=self._speak(
+                    "I do not have a recent answer to explain yet. Ask a search question first."
+                ),
+                results=[],
+                page_ids=[],
+                metadata=self._conversation_metadata(),
+            )
+        best = self.state.last_results[0]
+        memory = self._correction_memory_summary() or "none"
+        lines = [
+            f"I prioritized '{best.title}' because it best matched your latest intent and terms.",
+            f"Learned corrections applied: {memory}.",
+        ]
+        if best.summary:
+            lines.append(f"Summary signal: {self._shorten(best.summary, max_len=170)}")
+        if best.url:
+            lines.append(f"Source link: {best.url}")
+        return ConversationTurn(
+            reply=self._speak("\n".join(lines)),
+            results=self.state.last_results,
+            page_ids=self.state.last_page_ids,
+            metadata=self._conversation_metadata(),
+        )
+
+    def _feedback_ack_turn(self, text: str) -> ConversationTurn:
+        if self._is_not_quite_feedback(text):
+            return self._incorrect_feedback_turn("that is incorrect")
+        return ConversationTurn(
+            reply=self._speak(
+                "Great — thanks for confirming. I will keep using your latest corrections for follow-up searches."
+            ),
+            results=self.state.last_results,
+            page_ids=self.state.last_page_ids,
+            metadata=self._conversation_metadata(),
+        )
+
+    def _apply_quick_feedback_action(self, text: str) -> str | None:
+        lower = text.strip().lower()
+        if not lower.startswith("ui:"):
+            return None
+        action = lower[3:].strip()
+        mapping = {
+            "correct": "correct",
+            "not-quite": "not-quite",
+            "eng-only": "eng-only",
+            "exclude-legacy": "exclude-legacy",
+            "last-30-days": "last-30-days",
+            "explain-confidence": "explain-confidence",
+            "why-this-answer": "why-this-answer",
+            "undo-correction": "undo-correction",
+            "clear-corrections": "clear-corrections",
+        }
+        return mapping.get(action)
+
+    def _conversation_metadata(self) -> dict[str, Any]:
+        return serialize_conversation_state(self.state)
 
     @staticmethod
     def _dedupe_terms(values: list[str]) -> list[str]:
@@ -354,21 +657,37 @@ class ConfluenceConversationAgent:
         extracted_space_keys = self._extract_space_keys(text)
         if extracted_space_keys:
             self.state.correction_space_keys = extracted_space_keys
+            self.state.correction_history.append(
+                {"kind": "space_keys", "value": list(extracted_space_keys)}
+            )
 
         extracted_exclusions = self._extract_exclude_terms(text)
         if extracted_exclusions:
             merged_excludes = self.state.correction_exclude_terms + extracted_exclusions
             self.state.correction_exclude_terms = self._dedupe_terms(merged_excludes)[-6:]
+            self.state.correction_history.append(
+                {"kind": "exclude_terms", "value": list(extracted_exclusions)}
+            )
 
         extracted_dates = self._extract_date_filters(text)
         if extracted_dates is not None:
             self.state.correction_modified_since, self.state.correction_modified_before = (
                 extracted_dates
             )
+            self.state.correction_history.append(
+                {
+                    "kind": "date",
+                    "value": {
+                        "since": self.state.correction_modified_since,
+                        "before": self.state.correction_modified_before,
+                    },
+                }
+            )
 
         owner_hint = self._extract_owner_correction_hint(refinement or text)
         if owner_hint:
             self._remember_query_hint(owner_hint)
+            self.state.correction_history.append({"kind": "owner_hint", "value": owner_hint})
         refinement_is_owner_statement = bool(
             re.search(
                 r"\b(?:owner|ownership|owned by|responsible)\b",
@@ -1180,6 +1499,7 @@ class ConfluenceConversationAgent:
                 ),
                 results=[],
                 page_ids=[],
+                metadata=self._conversation_metadata(),
             )
         if allow_clarification and self._should_ask_clarification(
             query=effective_query, intent=intent, results=results, ranking=ranking
@@ -1614,3 +1934,53 @@ def serialize_results(results: list[SearchResult]) -> list[dict[str, Any]]:
         }
         for idx, item in enumerate(results, start=1)
     ]
+
+
+
+def serialize_conversation_state(state: ConversationState) -> dict[str, Any]:
+    summary_parts: list[str] = []
+    if state.correction_query_hints:
+        summary_parts.append(f"hints: {', '.join(state.correction_query_hints[:3])}")
+    if state.correction_space_keys:
+        if len(state.correction_space_keys) == 1:
+            summary_parts.append(f"space {state.correction_space_keys[0]}")
+        else:
+            summary_parts.append(f"spaces {', '.join(state.correction_space_keys[:4])}")
+    if state.correction_modified_since and state.correction_modified_before:
+        if state.correction_modified_since == state.correction_modified_before:
+            summary_parts.append(f"date {state.correction_modified_since}")
+        else:
+            summary_parts.append(
+                "modified "
+                f"{state.correction_modified_since} to {state.correction_modified_before}"
+            )
+    elif state.correction_modified_since:
+        summary_parts.append(f"modified since {state.correction_modified_since}")
+    elif state.correction_modified_before:
+        summary_parts.append(f"modified before {state.correction_modified_before}")
+    if state.correction_exclude_terms:
+        summary_parts.append(
+            f"excluding {', '.join(state.correction_exclude_terms[:4])}"
+        )
+
+    return {
+        "correction_memory": {
+            "query_hints": list(state.correction_query_hints),
+            "space_keys": list(state.correction_space_keys),
+            "exclude_terms": list(state.correction_exclude_terms),
+            "modified_since": state.correction_modified_since,
+            "modified_before": state.correction_modified_before,
+            "summary": "; ".join(summary_parts),
+        },
+        "feedback_actions": [
+            {"id": "correct", "label": "Correct"},
+            {"id": "not-quite", "label": "Not quite"},
+            {"id": "eng-only", "label": "Use ENG only"},
+            {"id": "exclude-legacy", "label": "Exclude legacy"},
+            {"id": "last-30-days", "label": "Last 30 days"},
+            {"id": "explain-confidence", "label": "Show confidence details"},
+            {"id": "why-this-answer", "label": "Why this answer"},
+            {"id": "undo-correction", "label": "Undo last correction"},
+            {"id": "clear-corrections", "label": "Clear corrections"},
+        ],
+    }

@@ -91,7 +91,7 @@ INDEX_HTML = """<!doctype html>
         padding: 1.15rem 1.15rem 1.25rem;
         margin-bottom: 1rem;
       }
-      form {
+      .settings-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 0.9rem 1rem;
@@ -276,7 +276,7 @@ INDEX_HTML = """<!doctype html>
         flex: 1;
       }
       @media (max-width: 760px) {
-        form {
+        .settings-grid {
           grid-template-columns: 1fr;
         }
         .chat-form {
@@ -318,7 +318,7 @@ INDEX_HTML = """<!doctype html>
       </header>
 
       <section class="panel">
-        <form id="search-form">
+        <div class="settings-grid">
           <label class="full">
             Confluence Base URL
             <input id="base-url" name="base_url" placeholder="https://your-domain.atlassian.net" required />
@@ -352,11 +352,10 @@ INDEX_HTML = """<!doctype html>
             <input id="limit" name="limit" type="number" min="1" max="50" value="10" />
           </label>
 
-          <div class="actions full">
-            <button type="submit">Search Confluence</button>
-            <span class="hint">Credentials are used only for live API calls and not persisted.</span>
-          </div>
-        </form>
+          <span class="hint full">
+            Credentials are used only for live API calls and not persisted. Ask Einstein in the chat box below.
+          </span>
+        </div>
       </section>
 
       <section class="panel">
@@ -394,7 +393,6 @@ INDEX_HTML = """<!doctype html>
     </main>
 
     <script>
-      const form = document.getElementById("search-form");
       const statusEl = document.getElementById("status");
       const loadingEl = document.getElementById("loading-indicator");
       const resultsEl = document.getElementById("results");
@@ -513,36 +511,6 @@ INDEX_HTML = """<!doctype html>
           resultsEl.appendChild(box);
         }
       }
-
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        status("Searching...");
-        setLoading(true);
-        resultsEl.textContent = "";
-
-        const payload = {
-          ...currentSettings(),
-          query: document.getElementById("query").value.trim(),
-        };
-
-        try {
-          const response = await fetch("/api/search", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-          const data = await response.json();
-          if (!response.ok) {
-            throw new Error(data.error || "Search failed.");
-          }
-          status(`Found ${data.results.length} result(s).`);
-          renderResults(data.results);
-        } catch (err) {
-          status(err.message || "Search failed.", true);
-        } finally {
-          setLoading(false);
-        }
-      });
 
       chatFormEl.addEventListener("submit", async (event) => {
         event.preventDefault();

@@ -698,10 +698,14 @@ class ConfluenceSearchAgent:
         return self._summarize_text(summary, max_len=920)
 
     def _body_text_from_search_entry(self, entry: dict[str, Any]) -> str:
-        content = entry.get("content", {})
-        body = content.get("body", {})
+        content_raw = entry.get("content", {})
+        content = content_raw if isinstance(content_raw, dict) else {}
+        body_raw = content.get("body", {})
+        body = body_raw if isinstance(body_raw, dict) else {}
         for body_key in ("view", "storage", "export_view"):
-            html_value = (body.get(body_key) or {}).get("value", "")
+            section = body.get(body_key) or {}
+            section_dict = section if isinstance(section, dict) else {}
+            html_value = section_dict.get("value", "")
             text = self._strip_html(html_value)
             if text:
                 return text
@@ -934,6 +938,11 @@ class ConfluenceSearchAgent:
                 attempt_errors.append(f"{url} -> network error: {exc}")
             except ConfluenceSearchError as exc:
                 attempt_errors.append(f"{url} -> {exc}")
+            except Exception as exc:
+                attempt_errors.append(
+                    f"{url} -> unexpected search processing error: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
         joined_errors = " | ".join(attempt_errors)
         raise ConfluenceSearchError(
@@ -1093,12 +1102,20 @@ class ConfluenceSearchAgent:
     ) -> list[SearchResult]:
         items: list[SearchResult] = []
         top_links = data.get("_links", {})
+        if not isinstance(top_links, dict):
+            top_links = {}
         top_base = top_links.get("base", self.base_url)
         summary_cache: dict[str, str] = {}
 
         for idx, entry in enumerate(data.get("results", [])):
+            if not isinstance(entry, dict):
+                continue
             content = entry.get("content", {})
+            if not isinstance(content, dict):
+                content = {}
             links = content.get("_links", {})
+            if not isinstance(links, dict):
+                links = {}
             base = links.get("base", top_base)
             webui = links.get("webui")
             page_url = urljoin(f"{base.rstrip('/')}/", webui.lstrip("/")) if webui else ""

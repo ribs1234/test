@@ -153,6 +153,7 @@ submission field.
   - `summarize result 2` (Einstein fetches that page's content for a more detailed natural summary)
   - `compare result 1 and 3`
   - `what changed result 2` (compares with the prior result set snapshot)
+  - correction feedback such as `that's incorrect` or `that is wrong` (Einstein asks for a refinement or reruns with your correction/filter)
   - `show more`
   - `again`
   - `in ENG space ...`, `in ENG and OPS spaces ...`, or `clear space filter`

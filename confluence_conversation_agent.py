@@ -75,6 +75,8 @@ class ConfluenceConversationAgent:
 
         self._apply_settings(settings)
         self._apply_inline_filters(text)
+        if self._is_incorrect_feedback(text):
+            return self._incorrect_feedback_turn(text)
         if self.state.pending_clarification_query and self._is_clarification_response(text):
             refined_query = self._resolve_clarification_query(text)
             if not refined_query:
@@ -156,6 +158,168 @@ class ConfluenceConversationAgent:
 
         search_query = self._search_query_from_message(text)
         return self._search_turn(search_query, from_more=False, allow_clarification=True)
+
+    @staticmethod
+    def _is_incorrect_feedback(text: str) -> bool:
+        lower = text.strip().lower()
+        if lower in {
+            "incorrect",
+            "wrong",
+            "not right",
+            "not correct",
+            "that's incorrect",
+            "that is incorrect",
+            "that's wrong",
+            "that is wrong",
+            "that was wrong",
+            "this was wrong",
+            "it was wrong",
+        }:
+            return True
+        patterns = (
+            r"^\s*(?:incorrect|wrong)\b",
+            r"\b(?:that|this|it)\s+(?:(?:is|was)\s+)?(?:incorrect|wrong|not right|not correct)\b",
+            r"\b(?:answer|response|result)\s+(?:(?:is|was)\s+)?(?:incorrect|wrong|off)\b",
+            r"\b(?:you are|you're)\s+wrong\b",
+            r"\bnot what (?:i|we)\s+(?:asked|meant|wanted)\b",
+        )
+        return any(re.search(pattern, lower, re.IGNORECASE) for pattern in patterns)
+
+    def _extract_incorrect_refinement(self, text: str) -> str:
+        cleaned = text.strip()
+        prefix_patterns = (
+            r"^\s*(?:no|nope|nah)\b[,\s:.-]*",
+            r"^\s*(?:that|this|it)\s+(?:(?:is|was)\s+)?(?:incorrect|wrong|not right|not correct)\b[,\s:.-]*",
+            r"^\s*(?:your|the)\s+(?:answer|response|result)\s+(?:(?:is|was)\s+)?(?:incorrect|wrong|off)\b[,\s:.-]*",
+            r"^\s*(?:incorrect|wrong|not right|not correct)\b[,\s:.-]*",
+        )
+        for pattern in prefix_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(
+            r"\b(?:that's incorrect|that is incorrect|that's wrong|that is wrong|that was wrong|this was wrong|it was wrong)\b",
+            " ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\b(?:i meant|we meant|it should be|it is|it's)\b",
+            " ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"^(?:that|this|it)\s+was\s+wrong\b[,\s:.-]*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.-:")
+        candidate = self._search_query_from_message(
+            cleaned, fallback_to_original=False
+        ).strip()
+        candidate = re.sub(
+            r"^(?:that|this|it)\s+(?:is|was)\s+(?:incorrect|wrong)\b[,\s:.-]*",
+            "",
+            candidate,
+            flags=re.IGNORECASE,
+        ).strip()
+        candidate_tokens = re.findall(r"[A-Za-z0-9]{2,}", candidate.lower())
+        if not candidate_tokens:
+            return ""
+        ignore = {
+            "that",
+            "this",
+            "it",
+            "is",
+            "was",
+            "wrong",
+            "incorrect",
+            "not",
+            "right",
+            "correct",
+            "answer",
+            "response",
+            "result",
+        }
+        if all(token in ignore for token in candidate_tokens):
+            return ""
+        return candidate
+
+    def _contains_filter_directive(self, text: str) -> bool:
+        lower = text.lower()
+        if self._extract_space_keys(text):
+            return True
+        if self._extract_exclude_terms(text):
+            return True
+        if self._extract_date_filters(text) is not None:
+            return True
+        if self._infer_limit_from_text(text) is not None:
+            return True
+        return bool(
+            re.search(
+                r"\b(?:all spaces|any space|clear space filter|clear all filters|reset all filters|remove all filters|clear exclude filter|clear exclusion filter|clear excludes|include all terms|clear date filter|any date|remove date filter)\b",
+                lower,
+                re.IGNORECASE,
+            )
+        )
+
+    def _incorrect_feedback_turn(self, text: str) -> ConversationTurn:
+        if not self.state.last_query:
+            return ConversationTurn(
+                reply=self._speak(
+                    "Thanks for the correction. I do not have a prior answer to revise yet. "
+                    "Ask a question, then tell me what to refine."
+                ),
+                results=[],
+                page_ids=[],
+            )
+
+        refinement = self._extract_incorrect_refinement(text)
+        if refinement:
+            revised_query = f"{self.state.last_query} {refinement}".strip()
+            return self._search_turn(
+                revised_query,
+                from_more=False,
+                allow_clarification=True,
+            )
+        if self._contains_filter_directive(text):
+            return self._search_turn(
+                self.state.last_query,
+                from_more=False,
+                allow_clarification=True,
+            )
+
+        options = self._clarification_options_from_results(self.state.last_results)
+        self.state.pending_clarification_query = self.state.last_query
+        self.state.pending_clarification_options = options
+        confidence_line = (
+            f"Current confidence: {self._format_confidence_percent(self.state.last_ranking.confidence)}.\n"
+            if self.state.last_ranking is not None
+            else ""
+        )
+        if options:
+            numbered = "\n".join(
+                f"{idx}) {option}" for idx, option in enumerate(options, start=1)
+            )
+            return ConversationTurn(
+                reply=self._speak(
+                    f"{confidence_line}"
+                    "Understood. Which direction is correct?\n"
+                    f"{numbered}\n"
+                    "Reply with a number, or add detail (team, space, date range, or ownership keyword)."
+                ),
+                results=self.state.last_results,
+                page_ids=self.state.last_page_ids,
+            )
+        return ConversationTurn(
+            reply=self._speak(
+                f"{confidence_line}"
+                "Understood. Tell me one concrete correction and I will rerun "
+                f"'{self.state.last_query}' with that refinement."
+            ),
+            results=self.state.last_results,
+            page_ids=self.state.last_page_ids,
+        )
 
     @staticmethod
     def _is_clarification_response(text: str) -> bool:
@@ -554,7 +718,9 @@ class ConfluenceConversationAgent:
         return lower in {"again", "rerun", "run again", "repeat", "refresh"}
 
     @staticmethod
-    def _search_query_from_message(text: str) -> str:
+    def _search_query_from_message(
+        text: str, *, fallback_to_original: bool = True
+    ) -> str:
         cleaned = text
         patterns = (
             r"\bin\s+[A-Za-z0-9_,\s&]+?\s+spaces?\b",
@@ -575,7 +741,9 @@ class ConfluenceConversationAgent:
             cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"^(?:show|show me|find|find me|search for)\b", " ", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.-")
-        return cleaned or text
+        if cleaned:
+            return cleaned
+        return text if fallback_to_original else ""
 
     @staticmethod
     def _requested_result_index(text: str) -> int | None:

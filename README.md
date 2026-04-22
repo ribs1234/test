@@ -145,6 +145,8 @@ Ask your query directly in the Einstein chat box; there is no separate query
 submission field.
 
 - Ask a natural question (example: `who owns vault oncall?`)
+- If your question is broad/ambiguous, Einstein can ask a targeted follow-up
+  clarification before running a final search.
 - Follow up with:
   - `summarize result 2` (Einstein fetches that page's content for a more detailed natural summary)
   - `compare result 1 and 3`
@@ -155,6 +157,10 @@ submission field.
   - `top 5 ...`, `show 12 results ...`, `first 3 ...` to set result count from the question
   - `since 2026-01-01 ...`, `between 2026-01-01 and 2026-03-01 ...`, `last 14 days ...`
   - `excluding draft ...`, `without legacy ...`, or `-deprecated`
+  - Clarification replies such as:
+    - `1` / `2` / `3` (pick one suggested interpretation)
+    - `first` / `second`
+    - freeform refinement (example: `ownership in ENG space`)
 
 Einstein infers both space filters and result count from the chat message, so
 there are no dedicated **Space Key** or **Limit** UI fields.

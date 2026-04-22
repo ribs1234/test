@@ -37,6 +37,8 @@ class ConversationState:
     previous_query: str = ""
     previous_results: list[SearchResult] = field(default_factory=list)
     previous_page_ids: list[str | None] = field(default_factory=list)
+    pending_clarification_query: str = ""
+    pending_clarification_options: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -69,6 +71,24 @@ class ConfluenceConversationAgent:
 
         self._apply_settings(settings)
         self._apply_inline_filters(text)
+        if self.state.pending_clarification_query and self._is_clarification_response(text):
+            refined_query = self._resolve_clarification_query(text)
+            if not refined_query:
+                option_count = len(self.state.pending_clarification_options)
+                return ConversationTurn(
+                    reply=self._speak(
+                        "I still need a refinement to continue. "
+                        f"Reply with a number (1-{option_count}) or add more detail."
+                    ),
+                    results=self.state.last_results,
+                    page_ids=self.state.last_page_ids,
+                )
+            self._clear_pending_clarification()
+            return self._search_turn(
+                refined_query,
+                from_more=False,
+                allow_clarification=False,
+            )
         detail_idx = self._requested_result_index(text)
         if detail_idx is not None:
             return self._result_detail_turn(detail_idx)
@@ -111,7 +131,11 @@ class ConfluenceConversationAgent:
                     page_ids=[],
                 )
             self.state.limit = min(self.state.limit + 5, 50)
-            return self._search_turn(self.state.last_query, from_more=True)
+            return self._search_turn(
+                self.state.last_query,
+                from_more=True,
+                allow_clarification=False,
+            )
 
         if self._is_repeat_request(text):
             if not self.state.last_query:
@@ -120,10 +144,74 @@ class ConfluenceConversationAgent:
                     results=[],
                     page_ids=[],
                 )
-            return self._search_turn(self.state.last_query, from_more=False)
+            return self._search_turn(
+                self.state.last_query,
+                from_more=False,
+                allow_clarification=False,
+            )
 
         search_query = self._search_query_from_message(text)
-        return self._search_turn(search_query, from_more=False)
+        return self._search_turn(search_query, from_more=False, allow_clarification=True)
+
+    @staticmethod
+    def _is_clarification_response(text: str) -> bool:
+        lower = text.strip().lower()
+        if lower in {
+            "more",
+            "show more",
+            "again",
+            "repeat",
+            "rerun",
+            "refresh",
+        }:
+            return False
+        if re.search(
+            r"\b(result|#)\s*\d{1,2}\b", lower
+        ) and re.search(r"\b(summary|summarize|detail|compare|changed|new)\b", lower):
+            return False
+        return True
+
+    @staticmethod
+    def _ordinal_to_index(text: str) -> int | None:
+        lower = text.lower()
+        mapping = {
+            "first": 1,
+            "second": 2,
+            "third": 3,
+            "fourth": 4,
+            "fifth": 5,
+        }
+        for key, value in mapping.items():
+            if re.search(rf"\b{key}\b", lower):
+                return value
+        return None
+
+    def _resolve_clarification_query(self, text: str) -> str | None:
+        base_query = self.state.pending_clarification_query.strip()
+        if not base_query:
+            return None
+        options = self.state.pending_clarification_options
+        if options:
+            numeric = re.search(r"^(?:option|result|#)?\s*(\d{1,2})$", text.strip(), re.IGNORECASE)
+            if numeric:
+                idx = int(numeric.group(1))
+                if 1 <= idx <= len(options):
+                    return f"{base_query} {options[idx - 1]}"
+                return None
+            ordinal = self._ordinal_to_index(text)
+            if ordinal and 1 <= ordinal <= len(options):
+                return f"{base_query} {options[ordinal - 1]}"
+
+        refinement = self._search_query_from_message(text).strip()
+        if not refinement:
+            return None
+        if refinement.lower() in {"same", "either", "any"}:
+            return base_query
+        return f"{base_query} {refinement}"
+
+    def _clear_pending_clarification(self) -> None:
+        self.state.pending_clarification_query = ""
+        self.state.pending_clarification_options = []
 
     def _apply_settings(self, settings: dict[str, Any]) -> None:
         base_url = str(settings.get("base_url", "")).strip()
@@ -526,7 +614,109 @@ class ConfluenceConversationAgent:
                 return int(match.group(1))
         return None
 
-    def _search_turn(self, query: str, *, from_more: bool) -> ConversationTurn:
+    @staticmethod
+    def _question_word_tokens(text: str) -> set[str]:
+        raw = re.findall(r"[A-Za-z0-9]{3,}", text or "")
+        stop = {
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "from",
+            "into",
+            "about",
+            "where",
+            "what",
+            "when",
+            "how",
+            "who",
+            "why",
+            "please",
+            "show",
+            "find",
+            "search",
+            "page",
+            "pages",
+            "result",
+            "results",
+            "confluence",
+        }
+        return {token.lower() for token in raw if token.lower() not in stop}
+
+    def _result_query_overlap(self, result: SearchResult, query_terms: set[str]) -> float:
+        if not query_terms:
+            return 0.0
+        haystack = f"{result.title} {result.summary}".lower()
+        hits = sum(1 for token in query_terms if token in haystack)
+        return hits / max(len(query_terms), 1)
+
+    def _should_ask_clarification(
+        self, *, query: str, intent: QueryIntent, results: list[SearchResult]
+    ) -> bool:
+        if len(results) < 2:
+            return False
+        query_terms = self._question_word_tokens(query)
+        if intent.intent_label == "general" and len(query_terms) <= 2:
+            return True
+
+        overlaps = [self._result_query_overlap(item, query_terms) for item in results[:3]]
+        if not overlaps:
+            return False
+        top_overlap = max(overlaps)
+        if top_overlap < 0.2:
+            return True
+        if len(overlaps) >= 2 and abs(overlaps[0] - overlaps[1]) < 0.08 and overlaps[0] < 0.5:
+            return True
+        return False
+
+    def _clarification_options_from_results(
+        self, results: list[SearchResult], *, max_options: int = 3
+    ) -> list[str]:
+        options: list[str] = []
+        for item in results:
+            title = re.sub(r"\s+", " ", (item.title or "").strip())
+            if not title:
+                continue
+            lowered = title.lower()
+            if lowered in {existing.lower() for existing in options}:
+                continue
+            options.append(title)
+            if len(options) >= max_options:
+                break
+        return options
+
+    def _clarification_turn(
+        self, *, query: str, results: list[SearchResult], page_ids: list[str | None]
+    ) -> ConversationTurn:
+        options = self._clarification_options_from_results(results)
+        if not options:
+            return ConversationTurn(
+                reply=self._speak(
+                    "I found multiple possible matches. Can you add one detail "
+                    "(team name, space, or date range) so I can narrow this down?"
+                ),
+                results=results,
+                page_ids=page_ids,
+            )
+
+        self.state.pending_clarification_query = query
+        self.state.pending_clarification_options = options
+        numbered = "\n".join(f"{idx}) {option}" for idx, option in enumerate(options, start=1))
+        return ConversationTurn(
+            reply=self._speak(
+                "I found a few plausible interpretations. Which one did you mean?\n"
+                f"{numbered}\n"
+                "Reply with a number, or add a detail (for example: team, space, or date range)."
+            ),
+            results=results,
+            page_ids=page_ids,
+        )
+
+    def _search_turn(
+        self, query: str, *, from_more: bool, allow_clarification: bool
+    ) -> ConversationTurn:
         prior_results = list(self.state.last_results)
         prior_page_ids = list(self.state.last_page_ids)
         prior_query = self.state.last_query
@@ -556,6 +746,7 @@ class ConfluenceConversationAgent:
         intent = ConfluenceSearchAgent._query_intent(query)
         filter_scope = self._active_filter_scope()
         if not results:
+            self._clear_pending_clarification()
             return ConversationTurn(
                 reply=self._speak(
                     f"I couldn't find matching pages{filter_scope} for '{query}'. "
@@ -564,7 +755,12 @@ class ConfluenceConversationAgent:
                 results=[],
                 page_ids=[],
             )
+        if allow_clarification and self._should_ask_clarification(
+            query=query, intent=intent, results=results
+        ):
+            return self._clarification_turn(query=query, results=results, page_ids=page_ids)
 
+        self._clear_pending_clarification()
         mode = "I fetched additional matches. " if from_more else ""
         best = results[0]
         answer = self._synthesized_answer_with_citations(intent, results)

@@ -769,13 +769,19 @@ class ConfluenceConversationAgent:
         likely_link = best.url or "No link available."
         return ConversationTurn(
             reply=self._speak(
-                f"{mode}Answer: {answer}\n"
-                f"Most likely result link [1]: {likely_link}\n"
-                f"Result summary:\n{result_summary}\n"
-                f"Sources:\n{sources}\n"
-                f"I found {len(results)} page(s){filter_scope} for '{query}' "
-                f"(intent: {self._intent_label(intent)}).\n"
-                "You can ask 'summarize result 2', 'what changed result 2', or 'show more'."
+                f"{mode}Direct answer:\n{answer}\n\n"
+                "Most likely result:\n"
+                f"- [1] {best.title}\n"
+                f"- Link: {likely_link}\n\n"
+                f"Top matches:\n{result_summary}\n\n"
+                f"Sources:\n{sources}\n\n"
+                "Search details:\n"
+                f"- Results: {len(results)}{filter_scope}\n"
+                f"- Intent: {self._intent_label(intent)}\n\n"
+                "Next actions:\n"
+                "- summarize result 2\n"
+                "- what changed result 2\n"
+                "- show more"
             ),
             results=results,
             page_ids=page_ids,
@@ -825,18 +831,17 @@ class ConfluenceConversationAgent:
         second = results[1]
         second_summary = self._shorten(second.summary, max_len=150)
         support = (
-            f" Supporting context from '{second.title}' [2] reinforces this: "
-            f"{second_summary}"
+            f"Supporting context from '{second.title}' [2]: {second_summary}"
         )
         if len(results) > 2:
-            support += " Additional corroboration is available in [3]."
-        return f"{lead}{support}"
+            support += "\nAdditional corroboration is available in [3]."
+        return f"{lead}\n{support}"
 
     def _summarize_result_set(self, results: list[SearchResult], *, max_items: int = 3) -> str:
         parts: list[str] = []
         for idx, item in enumerate(results[:max_items], start=1):
             snippet = self._shorten(item.summary, max_len=110)
-            parts.append(f"{idx}) {item.title} [{idx}] - {snippet}")
+            parts.append(f"{idx}) {item.title} [{idx}]\n   {snippet}")
         return "\n".join(parts)
 
     @staticmethod
@@ -1118,12 +1123,13 @@ class ConfluenceConversationAgent:
         right_only_text = ", ".join(right_only[:5]) if right_only else "no standout unique terms"
 
         reply = (
-            f"Comparison of result {first_idx} and result {second_idx}: "
-            f"Result {first_idx} is '{left.title}', and result {second_idx} is '{right.title}'. "
-            f"Common themes: {common_text}. "
-            f"Result {first_idx} unique focus: {left_only_text}. "
-            f"Result {second_idx} unique focus: {right_only_text}. "
-            "Ask for 'summarize result X' if you want deeper detail."
+            f"Comparison of result {first_idx} and result {second_idx}:\n"
+            f"- Result {first_idx}: '{left.title}'\n"
+            f"- Result {second_idx}: '{right.title}'\n"
+            f"- Common themes: {common_text}\n"
+            f"- Result {first_idx} unique focus: {left_only_text}\n"
+            f"- Result {second_idx} unique focus: {right_only_text}\n"
+            "Next: ask 'summarize result X' for deeper detail."
         )
         return ConversationTurn(
             reply=self._speak(reply),

@@ -168,6 +168,7 @@ there are no dedicated **Space Key** or **Limit** UI fields.
 Einstein responses are now source-grounded:
 - Direct answers include inline citations (`[1]`, `[2]`, ...)
 - A **Sources** section maps each citation to a concrete Confluence page link
+- Responses are sectioned for readability (Direct answer, Top matches, Sources, Next actions)
 
 The results panel also includes per-result quick actions:
 - **Explain** -> sends `summarize result X`

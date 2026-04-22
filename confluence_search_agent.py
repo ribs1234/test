@@ -565,7 +565,14 @@ class ConfluenceSearchAgent:
                 normalized = self._summarize_text(generated, max_len=max_len)
                 self._model_summary_cache[cache_key] = normalized or None
                 return normalized or None
-        except (HTTPError, URLError, ConfluenceSearchError, ValueError, TypeError):
+        except (
+            HTTPError,
+            URLError,
+            ConfluenceSearchError,
+            ValueError,
+            TypeError,
+            Exception,
+        ):
             self._model_summary_cache[cache_key] = None
             return None
 

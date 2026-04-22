@@ -34,11 +34,15 @@ INDEX_HTML = """<!doctype html>
         --exp-blue: #002f87;
         --exp-cyan: #00a3e0;
         --exp-violet: #4d148c;
+        --exp-indigo: #243a9a;
         --surface: #ffffff;
         --surface-soft: #f5f8ff;
         --text: #0e1735;
         --muted: #4a5680;
         --border: #d7dff4;
+        --ok: #0f7b4d;
+        --warn: #9a6400;
+        --err: #b00035;
         --shadow: 0 12px 32px rgba(9, 28, 82, 0.16);
         font-family: "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       }
@@ -51,6 +55,14 @@ INDEX_HTML = """<!doctype html>
           radial-gradient(circle at 82% 20%, rgba(77, 20, 140, 0.35), transparent 40%),
           linear-gradient(140deg, #00184d 0%, #002f87 45%, #0646b9 100%);
         position: relative;
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 28%);
+        z-index: 0;
       }
       .bg-logo {
         position: fixed;
@@ -73,6 +85,12 @@ INDEX_HTML = """<!doctype html>
         margin-bottom: 1.25rem;
         color: #f3f7ff;
       }
+      .hero-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.8rem;
+      }
       h1 {
         margin: 0;
         font-size: 2rem;
@@ -83,13 +101,55 @@ INDEX_HTML = """<!doctype html>
         max-width: 68ch;
         color: #d7e4ff;
       }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.75rem;
+        letter-spacing: 0.01em;
+        font-weight: 700;
+        padding: 0.35rem 0.62rem;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        color: #eaf2ff;
+        background: rgba(0, 0, 0, 0.15);
+      }
+      .hero-badges {
+        margin-top: 0.8rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+      }
+      .hero-badges .badge {
+        font-weight: 600;
+        background: rgba(255, 255, 255, 0.1);
+      }
       .panel {
         background: var(--surface);
         border-radius: 18px;
-        border: 1px solid rgba(255, 255, 255, 0.55);
+        border: 1px solid rgba(255, 255, 255, 0.68);
         box-shadow: var(--shadow);
-        padding: 1.15rem 1.15rem 1.25rem;
+        backdrop-filter: blur(3px);
+        padding: 1.1rem 1.15rem 1.25rem;
         margin-bottom: 1rem;
+      }
+      .panel-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.8rem;
+        margin-bottom: 0.85rem;
+      }
+      .panel-title {
+        margin: 0;
+        font-size: 0.98rem;
+        font-weight: 700;
+        color: var(--exp-blue);
+        letter-spacing: 0.01em;
+      }
+      .panel-subtle {
+        font-size: 0.79rem;
+        color: var(--muted);
       }
       .settings-grid {
         display: grid;
@@ -147,9 +207,24 @@ INDEX_HTML = """<!doctype html>
         color: var(--muted);
       }
       #status {
-        min-height: 1.3rem;
-        margin: 0.4rem 0 0;
+        min-height: 1rem;
+        margin: 0.2rem 0 0.4rem;
         font-weight: 600;
+        font-size: 0.83rem;
+        border-radius: 999px;
+        padding: 0.33rem 0.7rem;
+        display: inline-flex;
+        align-items: center;
+        background: rgba(0, 47, 135, 0.08);
+        color: var(--exp-blue);
+      }
+      #status[data-tone="ok"] {
+        background: rgba(15, 123, 77, 0.12);
+        color: var(--ok);
+      }
+      #status[data-tone="error"] {
+        background: rgba(176, 0, 53, 0.12);
+        color: var(--err);
       }
       .loading-wrap {
         display: none;
@@ -183,6 +258,25 @@ INDEX_HTML = """<!doctype html>
         display: grid;
         gap: 0.85rem;
       }
+      .results-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.8rem;
+        margin-bottom: 0.2rem;
+      }
+      .results-meta {
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+      .empty-results {
+        margin: 0.4rem 0 0;
+        border: 1px dashed var(--border);
+        border-radius: 12px;
+        padding: 0.9rem;
+        background: #fafcff;
+        color: var(--muted);
+      }
       .result {
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -190,9 +284,25 @@ INDEX_HTML = """<!doctype html>
         background: white;
         box-shadow: 0 4px 14px rgba(7, 23, 64, 0.06);
       }
+      .result-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.7rem;
+      }
       .result h3 {
         margin: 0;
         font-size: 1.05rem;
+      }
+      .rank-pill {
+        font-size: 0.74rem;
+        font-weight: 700;
+        color: var(--exp-indigo);
+        background: rgba(36, 58, 154, 0.08);
+        border: 1px solid rgba(36, 58, 154, 0.16);
+        border-radius: 999px;
+        padding: 0.21rem 0.5rem;
+        white-space: nowrap;
       }
       .result a {
         color: var(--exp-blue);
@@ -218,7 +328,7 @@ INDEX_HTML = """<!doctype html>
         margin-top: 0.75rem;
       }
       .tiny-btn {
-        padding: 0.34rem 0.72rem;
+        padding: 0.36rem 0.72rem;
         font-size: 0.76rem;
         border-radius: 999px;
         background: #eef2ff;
@@ -237,6 +347,24 @@ INDEX_HTML = """<!doctype html>
       .chat-wrap {
         display: grid;
         gap: 0.8rem;
+      }
+      .prompt-chips {
+        display: flex;
+        gap: 0.45rem;
+        flex-wrap: wrap;
+      }
+      .chip-btn {
+        border-radius: 999px;
+        border: 1px solid rgba(0, 47, 135, 0.16);
+        background: rgba(0, 47, 135, 0.06);
+        color: var(--exp-blue);
+        font-size: 0.76rem;
+        font-weight: 600;
+        padding: 0.29rem 0.62rem;
+        cursor: pointer;
+      }
+      .chip-btn:hover {
+        background: rgba(0, 47, 135, 0.1);
       }
       #chat-log {
         max-height: 320px;
@@ -299,9 +427,23 @@ INDEX_HTML = """<!doctype html>
       .chat-form input {
         flex: 1;
       }
+      .chat-form button:disabled,
+      .chat-toolbar button:disabled,
+      .result-actions button:disabled {
+        opacity: 0.62;
+        cursor: not-allowed;
+      }
       @media (max-width: 760px) {
         .settings-grid {
           grid-template-columns: 1fr;
+        }
+        .hero-top {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .results-head {
+          align-items: flex-start;
+          flex-direction: column;
         }
         .chat-form {
           flex-direction: column;
@@ -334,14 +476,26 @@ INDEX_HTML = """<!doctype html>
     </svg>
     <main class="shell">
       <header class="hero">
-        <h1>Confluence Intelligence Search</h1>
+        <div class="hero-top">
+          <h1>Confluence Intelligence Search</h1>
+          <span class="badge">Einstein Ready</span>
+        </div>
         <p>
-          Search your Confluence knowledge base and get concise AI-generated summaries
-          of each matching page.
+          Ask natural questions, get grounded answers, and move faster with concise
+          AI-generated page summaries.
         </p>
+        <div class="hero-badges">
+          <span class="badge">Citations</span>
+          <span class="badge">Smart Filters</span>
+          <span class="badge">Follow-up Actions</span>
+        </div>
       </header>
 
       <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Connection Settings</h2>
+          <span class="panel-subtle">Used only for live API calls</span>
+        </div>
         <div class="settings-grid">
           <label class="full">
             Confluence Base URL
@@ -370,7 +524,16 @@ INDEX_HTML = """<!doctype html>
 
       <section class="panel">
         <div class="chat-wrap">
-          <strong>Einstein Chatbot</strong>
+          <div class="panel-head">
+            <h2 class="panel-title">Einstein Chat</h2>
+            <span class="panel-subtle">Conversation-aware Confluence assistant</span>
+          </div>
+          <div id="prompt-chips" class="prompt-chips" aria-label="Quick prompts">
+            <button type="button" class="chip-btn" data-message="who owns 4x9?">Who owns 4x9?</button>
+            <button type="button" class="chip-btn" data-message="where can I find the 4x9 status page?">Find 4x9 status</button>
+            <button type="button" class="chip-btn" data-message="top 5 in ENG and OPS spaces">Top 5 in ENG + OPS</button>
+            <button type="button" class="chip-btn" data-message="summarize result 1">Summarize #1</button>
+          </div>
           <div id="chat-log" aria-live="polite"></div>
           <form id="chat-form" class="chat-form">
             <input
@@ -379,7 +542,7 @@ INDEX_HTML = """<!doctype html>
               placeholder="Ask Einstein: who owns this service, summarize result 2, compare #1 and #3, or show more"
               required
             />
-            <button type="submit">Send</button>
+            <button id="chat-send-btn" type="submit">Send</button>
           </form>
           <div class="chat-toolbar">
             <button type="button" id="clear-chat-btn" class="ghost-btn">Clear Conversation</button>
@@ -390,6 +553,10 @@ INDEX_HTML = """<!doctype html>
       </section>
 
       <section class="panel">
+        <div class="results-head">
+          <h2 class="panel-title">Results</h2>
+          <span id="results-meta" class="results-meta">No results yet.</span>
+        </div>
         <div id="status" aria-live="polite"></div>
         <div id="loading-indicator" class="loading-wrap" aria-hidden="true">
           <img
@@ -411,12 +578,24 @@ INDEX_HTML = """<!doctype html>
       const chatMessageEl = document.getElementById("chat-message");
       const clearChatBtnEl = document.getElementById("clear-chat-btn");
       const exportChatBtnEl = document.getElementById("export-chat-btn");
+      const promptChipContainerEl = document.getElementById("prompt-chips");
+      const resultsMetaEl = document.getElementById("results-meta");
+      const chatSendBtnEl = document.getElementById("chat-send-btn");
+      const settingsEls = {
+        base_url: document.getElementById("base-url"),
+        personal_access_token: document.getElementById("personal-access-token"),
+        email: document.getElementById("email"),
+        api_token: document.getElementById("api-token"),
+      };
+      const SETTINGS_STORAGE_KEY = "confluence-ui-settings-v1";
       const chatTranscript = [];
       let lastRenderedResults = [];
+      let settingsLoadedFromStorage = false;
 
-      function status(message, isError = false) {
-        statusEl.textContent = message;
-        statusEl.style.color = isError ? "crimson" : "";
+      function status(message, tone = "info") {
+        statusEl.textContent = String(message || "");
+        statusEl.dataset.tone =
+          tone === "error" || tone === "ok" ? tone : "info";
       }
 
       function setLoading(isLoading) {
@@ -470,27 +649,89 @@ INDEX_HTML = """<!doctype html>
 
       function currentSettings() {
         return {
-          base_url: document.getElementById("base-url").value.trim(),
-          personal_access_token: document.getElementById("personal-access-token").value,
-          email: document.getElementById("email").value.trim(),
-          api_token: document.getElementById("api-token").value,
+          base_url: settingsEls.base_url.value.trim(),
+          personal_access_token: settingsEls.personal_access_token.value,
+          email: settingsEls.email.value.trim(),
+          api_token: settingsEls.api_token.value,
         };
+      }
+
+      function persistableSettingsSnapshot() {
+        const payload = currentSettings();
+        return {
+          base_url: payload.base_url,
+          email: payload.email,
+        };
+      }
+
+      function saveSettingsToStorage() {
+        if (!settingsLoadedFromStorage) return;
+        try {
+          localStorage.setItem(
+            SETTINGS_STORAGE_KEY,
+            JSON.stringify(persistableSettingsSnapshot())
+          );
+        } catch (_) {
+          // Ignore storage errors in restrictive browser contexts.
+        }
+      }
+
+      function loadSettingsFromStorage() {
+        try {
+          const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+          if (!raw) return;
+          const data = JSON.parse(raw);
+          if (data && typeof data === "object") {
+            if (typeof data.base_url === "string") {
+              settingsEls.base_url.value = data.base_url;
+            }
+            if (typeof data.email === "string") {
+              settingsEls.email.value = data.email;
+            }
+          }
+        } catch (_) {
+          // Ignore malformed storage payloads.
+        } finally {
+          settingsLoadedFromStorage = true;
+        }
+      }
+
+      function setButtonsDisabled(isDisabled) {
+        const formButtons = chatFormEl.querySelectorAll("button");
+        for (const button of formButtons) button.disabled = isDisabled;
+        clearChatBtnEl.disabled = isDisabled;
+        exportChatBtnEl.disabled = isDisabled;
+      }
+
+      function formatTimestamp(isoValue) {
+        if (!isoValue) return "";
+        const parsed = new Date(isoValue);
+        if (Number.isNaN(parsed.valueOf())) return isoValue;
+        return parsed.toLocaleString();
       }
 
       function renderResults(items) {
         resultsEl.textContent = "";
         lastRenderedResults = Array.isArray(items) ? items : [];
         if (!lastRenderedResults.length) {
+          resultsMetaEl.textContent = "No matching pages found.";
           const empty = document.createElement("p");
-          empty.textContent = "No matching pages found.";
+          empty.className = "empty-results";
+          empty.textContent = "No matching pages found for the latest request.";
           resultsEl.appendChild(empty);
           return;
         }
+        resultsMetaEl.textContent =
+          lastRenderedResults.length === 1
+            ? "1 result"
+            : `${lastRenderedResults.length} results`;
 
         for (const item of lastRenderedResults) {
           const box = document.createElement("section");
           box.className = "result";
 
+          const head = document.createElement("div");
+          head.className = "result-head";
           const title = document.createElement("h3");
           if (item.url) {
             const a = document.createElement("a");
@@ -502,13 +743,24 @@ INDEX_HTML = """<!doctype html>
           } else {
             title.textContent = item.title;
           }
-          box.appendChild(title);
+          head.appendChild(title);
+
+          const resultIndex = Number(item.index) || 0;
+          if (resultIndex > 0) {
+            const rank = document.createElement("span");
+            rank.className = "rank-pill";
+            rank.textContent = "#" + resultIndex;
+            head.appendChild(rank);
+          }
+          box.appendChild(head);
 
           const meta = document.createElement("div");
           meta.className = "meta";
           const bits = [];
           if (item.space_key) bits.push("Space: " + item.space_key);
-          if (item.last_modified) bits.push("Last Modified: " + item.last_modified);
+          if (item.last_modified) {
+            bits.push("Last Modified: " + formatTimestamp(item.last_modified));
+          }
           meta.textContent = bits.join(" | ");
           if (bits.length > 0) box.appendChild(meta);
 
@@ -519,7 +771,6 @@ INDEX_HTML = """<!doctype html>
             box.appendChild(summary);
           }
 
-          const resultIndex = Number(item.index) || 0;
           if (resultIndex > 0) {
             const actions = document.createElement("div");
             actions.className = "result-actions";
@@ -557,6 +808,16 @@ INDEX_HTML = """<!doctype html>
             changedBtn.dataset.index = String(resultIndex);
             changedBtn.textContent = "What changed";
             actions.appendChild(changedBtn);
+
+            if (item.url) {
+              const copyBtn = document.createElement("button");
+              copyBtn.type = "button";
+              copyBtn.className = "tiny-btn result-action-btn";
+              copyBtn.dataset.action = "copy-link";
+              copyBtn.dataset.url = item.url;
+              copyBtn.textContent = "Copy link";
+              actions.appendChild(copyBtn);
+            }
             box.appendChild(actions);
           }
           resultsEl.appendChild(box);
@@ -570,8 +831,9 @@ INDEX_HTML = """<!doctype html>
         if (echoUser) {
           appendChatBubble("user", trimmed);
         }
-        status("Conversation search running...");
+        status("Conversation search running...", "info");
         setLoading(true);
+        setButtonsDisabled(true);
 
         const payload = {
           message: trimmed,
@@ -590,12 +852,13 @@ INDEX_HTML = """<!doctype html>
           }
           appendChatBubble("assistant", data.reply || "Done.");
           renderResults(data.results || []);
-          status("Conversation updated.");
+          status("Conversation updated.", "ok");
         } catch (err) {
           appendChatBubble("assistant", err.message || "Conversation request failed.");
-          status(err.message || "Conversation request failed.", true);
+          status(err.message || "Conversation request failed.", "error");
         } finally {
           setLoading(false);
+          setButtonsDisabled(false);
         }
       }
 
@@ -612,10 +875,21 @@ INDEX_HTML = """<!doctype html>
         if (!(target instanceof HTMLElement)) return;
         const button = target.closest(".result-action-btn");
         if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+        const action = button.dataset.action || "";
+        if (action === "copy-link") {
+          const rawUrl = String(button.dataset.url || "");
+          if (!rawUrl) return;
+          try {
+            await navigator.clipboard.writeText(rawUrl);
+            status("Link copied to clipboard.", "ok");
+          } catch (_) {
+            status("Unable to copy link in this browser context.", "error");
+          }
+          return;
+        }
+
         const idx = Number(button.dataset.index || "0");
         if (!idx) return;
-
-        const action = button.dataset.action || "";
         if (action === "summarize") {
           await sendChatMessage(`summarize result ${idx}`, { echoUser: true });
           return;
@@ -636,6 +910,7 @@ INDEX_HTML = """<!doctype html>
 
       clearChatBtnEl.addEventListener("click", async () => {
         setLoading(true);
+        setButtonsDisabled(true);
         try {
           const response = await fetch("/api/chat/clear", { method: "POST" });
           const data = await response.json();
@@ -645,18 +920,20 @@ INDEX_HTML = """<!doctype html>
           chatLogEl.textContent = "";
           chatTranscript.length = 0;
           resultsEl.textContent = "";
+          resultsMetaEl.textContent = "No results yet.";
           appendChatBubble("assistant", data.reply || "Conversation cleared.");
-          status("Conversation cleared.");
+          status("Conversation cleared.", "ok");
         } catch (err) {
-          status(err.message || "Could not clear conversation.", true);
+          status(err.message || "Could not clear conversation.", "error");
         } finally {
           setLoading(false);
+          setButtonsDisabled(false);
         }
       });
 
       exportChatBtnEl.addEventListener("click", () => {
         if (!chatTranscript.length) {
-          status("No transcript to export yet.", true);
+          status("No transcript to export yet.", "error");
           return;
         }
         const exportPayload = {
@@ -675,8 +952,27 @@ INDEX_HTML = """<!doctype html>
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        status("Transcript exported.");
+        status("Transcript exported.", "ok");
       });
+
+      promptChipContainerEl.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const button = target.closest(".chip-btn");
+        if (!(button instanceof HTMLButtonElement)) return;
+        const message = String(button.dataset.message || "").trim();
+        if (!message) return;
+        await sendChatMessage(message, { echoUser: true });
+      });
+
+      loadSettingsFromStorage();
+      for (const key of Object.keys(settingsEls)) {
+        settingsEls[key].addEventListener("change", saveSettingsToStorage);
+      }
+      for (const key of ["base_url", "email"]) {
+        settingsEls[key].addEventListener("blur", saveSettingsToStorage);
+      }
+      status("Ready. Ask Einstein a question to begin.", "info");
 
       appendChatBubble(
         "assistant",

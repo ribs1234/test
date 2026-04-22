@@ -50,6 +50,30 @@ Filter by space and limit results:
 python confluence_search_agent.py "incident runbook" --space-key ENG --limit 5
 ```
 
+### Accuracy tuning: candidate expansion + reranking
+
+Search now fetches a larger candidate pool first, then reranks to improve top
+result quality.
+
+Configuration:
+
+- `CONFLUENCE_CANDIDATE_POOL_MULTIPLIER` (default: `4`)
+- `CONFLUENCE_CANDIDATE_POOL_CAP` (default: `50`)
+
+Equivalent CLI flags:
+
+- `--candidate-pool-multiplier`
+- `--candidate-pool-cap`
+
+Example:
+
+```bash
+python3 confluence_search_agent.py "where can I find 4x9 status" \
+  --limit 5 \
+  --candidate-pool-multiplier 5 \
+  --candidate-pool-cap 80
+```
+
 JSON output:
 
 ```bash

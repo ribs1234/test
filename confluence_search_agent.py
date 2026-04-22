@@ -10,6 +10,7 @@ import os
 import re
 import sys
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from html import unescape
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -135,6 +136,12 @@ class ModelSummarizerConfig:
     max_results: int
 
 
+@dataclass
+class RetrievalConfig:
+    candidate_pool_multiplier: int
+    candidate_pool_cap: int
+
+
 class ConfluenceSearchAgent:
     """Minimal API client that searches Confluence pages by CQL."""
 
@@ -151,6 +158,8 @@ class ConfluenceSearchAgent:
         summarizer_model: str | None = None,
         summarizer_api_base: str | None = None,
         summarizer_max_results: int | None = None,
+        candidate_pool_multiplier: int | None = None,
+        candidate_pool_cap: int | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("base_url is required")
@@ -167,6 +176,10 @@ class ConfluenceSearchAgent:
             model=summarizer_model,
             api_base=summarizer_api_base,
             max_results=summarizer_max_results,
+        )
+        self.retrieval_config = self._resolve_retrieval_config(
+            candidate_pool_multiplier=candidate_pool_multiplier,
+            candidate_pool_cap=candidate_pool_cap,
         )
         self._model_summary_cache: dict[tuple[bool, str, str], str | None] = {}
 
@@ -220,6 +233,36 @@ class ConfluenceSearchAgent:
         if self.model_summarizer.backend == "heuristic":
             return False
         return bool(self.model_summarizer.api_key and self.model_summarizer.model)
+
+    @staticmethod
+    def _resolve_retrieval_config(
+        *,
+        candidate_pool_multiplier: int | None,
+        candidate_pool_cap: int | None,
+    ) -> RetrievalConfig:
+        raw_multiplier = (
+            candidate_pool_multiplier
+            if candidate_pool_multiplier is not None
+            else os.getenv("CONFLUENCE_CANDIDATE_POOL_MULTIPLIER", "4")
+        )
+        raw_cap = (
+            candidate_pool_cap
+            if candidate_pool_cap is not None
+            else os.getenv("CONFLUENCE_CANDIDATE_POOL_CAP", "50")
+        )
+        try:
+            parsed_multiplier = int(raw_multiplier)
+        except (TypeError, ValueError):
+            parsed_multiplier = 4
+        try:
+            parsed_cap = int(raw_cap)
+        except (TypeError, ValueError):
+            parsed_cap = 50
+
+        return RetrievalConfig(
+            candidate_pool_multiplier=max(1, min(parsed_multiplier, 8)),
+            candidate_pool_cap=max(10, min(parsed_cap, 200)),
+        )
 
     @staticmethod
     def _candidate_api_roots(base_url: str) -> list[str]:
@@ -785,6 +828,14 @@ class ConfluenceSearchAgent:
         intent = self._query_intent(query)
         if not intent.search_phrase:
             return []
+        requested_limit = max(1, min(int(limit), 50))
+        expanded_limit = min(
+            self.retrieval_config.candidate_pool_cap,
+            max(
+                requested_limit,
+                requested_limit * self.retrieval_config.candidate_pool_multiplier,
+            ),
+        )
 
         normalized_space_keys: list[str] = []
         for candidate in [space_key, *(space_keys or [])]:
@@ -836,7 +887,7 @@ class ConfluenceSearchAgent:
         params = urlencode(
             {
                 "cql": cql,
-                "limit": str(limit),
+                "limit": str(expanded_limit),
                 "expand": "content.space,content.version,content.body.view",
             }
         )
@@ -865,6 +916,7 @@ class ConfluenceSearchAgent:
                     api_root=api_root,
                     query=query,
                     intent=intent,
+                    requested_limit=requested_limit,
                 )
             except HTTPError as exc:
                 detail = self._extract_error_detail(exc)
@@ -953,24 +1005,80 @@ class ConfluenceSearchAgent:
 
         return score
 
+    @staticmethod
+    def _keyword_coverage_score(result: SearchResult, intent: QueryIntent) -> float:
+        keywords = [token for token in intent.keywords if token]
+        if not keywords:
+            return 0.0
+        title = (result.title or "").lower()
+        summary = (result.summary or "").lower()
+        haystack = f"{title} {summary}"
+        hits = sum(1 for token in keywords if token in haystack)
+        if hits <= 0:
+            return 0.0
+        return hits / max(len(keywords), 1)
+
+    @staticmethod
+    def _recency_score(result: SearchResult) -> float:
+        stamp = (result.last_modified or "").strip()
+        if not stamp:
+            return 0.0
+        match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", stamp)
+        if not match:
+            return 0.0
+        try:
+            year = int(match.group(1))
+            month = int(match.group(2))
+            day = int(match.group(3))
+        except ValueError:
+            return 0.0
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            return 0.0
+        return ((year * 372) + (month * 31) + day) / 1_000_000.0
+
+    def _result_relevance_score(self, result: SearchResult, intent: QueryIntent) -> float:
+        intent_boost = self._result_boost_score(result, intent)
+        coverage = self._keyword_coverage_score(result, intent)
+        recency = self._recency_score(result)
+        return (intent_boost * 1.25) + (coverage * 3.2) + recency
+
     def _rank_results_by_intent(
-        self, results: list[SearchResult], intent: QueryIntent
+        self,
+        results: list[SearchResult],
+        intent: QueryIntent,
+        *,
+        final_limit: int,
+        use_enhanced_ranker: bool = True,
     ) -> list[SearchResult]:
         if len(results) <= 1:
-            return results
+            return results[:final_limit]
+
+        capped_limit = max(1, final_limit)
+        if not use_enhanced_ranker:
+            scored = [
+                (idx, self._result_boost_score(item, intent), item)
+                for idx, item in enumerate(results)
+            ]
+            if not any(score > 0 for _, score, _ in scored):
+                return results[:capped_limit]
+            ordered = sorted(scored, key=lambda item: (-item[1], item[0]))
+            return [item for _, _, item in ordered[:capped_limit]]
 
         scored = [
-            (idx, self._result_boost_score(item, intent), item)
+            (idx, self._result_relevance_score(item, intent), item)
             for idx, item in enumerate(results)
         ]
-        if not any(score > 0 for _, score, _ in scored):
-            return results
-
         ordered = sorted(scored, key=lambda item: (-item[1], item[0]))
-        return [item for _, _, item in ordered]
+        return [item for _, _, item in ordered[:capped_limit]]
 
     def _parse_results(
-        self, data: dict[str, Any], *, api_root: str, query: str, intent: QueryIntent
+        self,
+        data: dict[str, Any],
+        *,
+        api_root: str,
+        query: str,
+        intent: QueryIntent,
+        final_limit: int,
     ) -> list[SearchResult]:
         items: list[SearchResult] = []
         top_links = data.get("_links", {})
@@ -1010,7 +1118,12 @@ class ConfluenceSearchAgent:
                 )
             )
 
-        return self._rank_results_by_intent(items, intent)
+        return self._rank_results_by_intent(
+            items,
+            intent,
+            final_limit=final_limit,
+            use_enhanced_ranker=True,
+        )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -1098,6 +1211,24 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--candidate-pool-multiplier",
+        type=int,
+        default=int(os.getenv("CONFLUENCE_CANDIDATE_POOL_MULTIPLIER", "4")),
+        help=(
+            "Candidate expansion factor before reranking "
+            "(or set CONFLUENCE_CANDIDATE_POOL_MULTIPLIER)"
+        ),
+    )
+    parser.add_argument(
+        "--candidate-pool-cap",
+        type=int,
+        default=int(os.getenv("CONFLUENCE_CANDIDATE_POOL_CAP", "50")),
+        help=(
+            "Max candidate pool size before reranking "
+            "(or set CONFLUENCE_CANDIDATE_POOL_CAP)"
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output results as JSON",
@@ -1142,6 +1273,8 @@ def main(argv: list[str]) -> int:
             summarizer_model=args.summarizer_model,
             summarizer_api_base=args.summarizer_api_base,
             summarizer_max_results=args.summarizer_max_results,
+            candidate_pool_multiplier=args.candidate_pool_multiplier,
+            candidate_pool_cap=args.candidate_pool_cap,
         )
         results = agent.search(args.query, limit=args.limit, space_key=args.space_key)
     except (ValueError, ConfluenceSearchError) as exc:

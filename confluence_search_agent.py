@@ -927,7 +927,7 @@ class ConfluenceSearchAgent:
                     api_root=api_root,
                     query=query,
                     intent=intent,
-                    requested_limit=requested_limit,
+                    final_limit=requested_limit,
                 )
             except HTTPError as exc:
                 detail = self._extract_error_detail(exc)

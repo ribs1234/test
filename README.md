@@ -106,3 +106,25 @@ there are no dedicated **Space Key** or **Limit** UI fields.
   - **Export Transcript** downloads the full chat transcript as a `.txt` file
 
 Conversation state is stored per browser session (via local server session cookie) and used only for this local app runtime.
+
+### Conversational LLM mode (Copilot-style)
+
+Einstein can be configured to respond in a more conversational LLM style while still
+using Confluence retrieval for grounding.
+
+In the web UI settings, optionally provide:
+- `Conversational LLM API Key`
+- `Conversational LLM Model` (default: `gpt-4.1-mini`)
+- `Conversational LLM API Base` (default for OpenAI-compatible APIs: `https://api.openai.com/v1`)
+
+You can also configure via environment variables:
+- `CONFLUENCE_CHAT_MODEL_API_KEY`
+- `CONFLUENCE_CHAT_MODEL` (optional)
+- `CONFLUENCE_CHAT_MODEL_API_BASE` (optional)
+- `CONFLUENCE_CHAT_MODEL_ENABLED=true` (optional explicit enable switch)
+
+Behavior:
+- Regular Einstein queries still run Confluence search first, then optionally use the
+  chat model to generate a more natural conversational answer from retrieved results.
+- Use `chat: <message>` to ask Einstein general conversational questions outside the
+  retrieval flow.

@@ -339,8 +339,21 @@ INDEX_HTML = """<!doctype html>
             <input id="api-token" name="api_token" type="password" />
           </label>
 
+          <label>
+            Conversational LLM API Key (optional)
+            <input id="chat-model-api-key" name="chat_model_api_key" type="password" />
+          </label>
+          <label>
+            Conversational LLM Model
+            <input id="chat-model-name" name="chat_model_name" placeholder="gpt-4.1-mini" value="gpt-4.1-mini" />
+          </label>
+          <label class="full">
+            Conversational LLM API Base (optional)
+            <input id="chat-model-api-base" name="chat_model_api_base" placeholder="https://api.openai.com/v1" />
+          </label>
+
           <span class="hint full">
-            Credentials are used only for live API calls and not persisted. Einstein infers space and result count from your question (for example: "top 5 in ENG space").
+            Credentials are used only for live API calls and not persisted. Einstein infers space and result count from your question (for example: "top 5 in ENG space"). Add chat-model settings for a more conversational Copilot-style response. Use <code>chat:</code> prefix for general chat without retrieval.
           </span>
         </div>
       </section>
@@ -450,6 +463,9 @@ INDEX_HTML = """<!doctype html>
           personal_access_token: document.getElementById("personal-access-token").value,
           email: document.getElementById("email").value.trim(),
           api_token: document.getElementById("api-token").value,
+          chat_model_api_key: document.getElementById("chat-model-api-key").value,
+          chat_model_name: document.getElementById("chat-model-name").value.trim(),
+          chat_model_api_base: document.getElementById("chat-model-api-base").value.trim(),
         };
       }
 
@@ -578,7 +594,7 @@ INDEX_HTML = """<!doctype html>
 
       appendChatBubble(
         "assistant",
-        "Einstein here. Ask a question like 'who owns vault oncall?' then follow up with 'summarize result 2', 'compare #1 and #3', or 'show more'."
+        "Einstein here. Ask a question like 'who owns vault oncall?' then follow up with 'summarize result 2', 'compare #1 and #3', or 'show more'. For Copilot-style conversational responses, provide chat model settings above. You can also use 'chat: <message>' for general chat."
       );
     </script>
   </body>
@@ -597,8 +613,12 @@ class SearchHandler(BaseHTTPRequestHandler):
         self._write_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
-        if self.path not in {"/api/search", "/api/chat"}:
+        if self.path not in {"/api/search", "/api/chat", "/api/chat/clear"}:
             self._write_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        if self.path == "/api/chat/clear":
+            self._handle_chat_clear()
             return
 
         payload = self._read_json_payload()
@@ -666,6 +686,14 @@ class SearchHandler(BaseHTTPRequestHandler):
                 {"error": "Unexpected server error while handling conversation."},
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+
+    def _handle_chat_clear(self) -> None:
+        session_state = self._get_or_create_conversation_state()
+        session_state.last_query = ""
+        session_state.last_results = []
+        session_state.last_page_ids = []
+        session_state.conversation_history = []
+        self._write_json({"reply": "Einstein: Conversation cleared."})
 
     def _read_json_payload(self) -> dict[str, Any] | None:
         try:

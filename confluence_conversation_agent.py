@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from confluence_search_agent import (
     ConfluenceSearchAgent,
@@ -26,9 +30,14 @@ class ConversationState:
     api_token: str | None = None
     space_key: str | None = None
     limit: int = DEFAULT_LIMIT
+    chat_model_api_key: str | None = None
+    chat_model_name: str = "gpt-4.1-mini"
+    chat_model_api_base: str = "https://api.openai.com/v1"
+    chat_model_enabled: bool = False
     last_query: str = ""
     last_results: list[SearchResult] = field(default_factory=list)
     last_page_ids: list[str | None] = field(default_factory=list)
+    conversation_history: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -60,6 +69,12 @@ class ConfluenceConversationAgent:
             )
 
         self._apply_settings(settings)
+        self._append_history("user", text)
+
+        if text.lower().startswith("chat:"):
+            prompt = text.split(":", 1)[1].strip()
+            return self._chat_only_turn(prompt or text)
+
         self._apply_inline_filters(text)
         detail_idx = self._requested_result_index(text)
         if detail_idx is not None:
@@ -70,6 +85,8 @@ class ConfluenceConversationAgent:
             return self._compare_results_turn(compare_indices[0], compare_indices[1])
 
         if not self.state.base_url:
+            if self._has_chat_model():
+                return self._chat_only_turn(text)
             return ConversationTurn(
                 reply=self._speak(
                     "Set a Confluence Base URL before starting the conversation."
@@ -82,6 +99,8 @@ class ConfluenceConversationAgent:
             self.state.personal_access_token
             or (self.state.email and self.state.api_token)
         ):
+            if self._has_chat_model():
+                return self._chat_only_turn(text)
             return ConversationTurn(
                 reply=self._speak(
                     "Provide a Personal Access Token, or email + API token, to continue."
@@ -113,6 +132,136 @@ class ConfluenceConversationAgent:
 
         return self._search_turn(text, from_more=False)
 
+    def _append_history(self, role: str, content: str) -> None:
+        clean = re.sub(r"\s+", " ", str(content or "")).strip()
+        if not clean:
+            return
+        self.state.conversation_history.append({"role": role, "content": clean})
+        self.state.conversation_history = self.state.conversation_history[-16:]
+
+    def _chat_model_config(self) -> tuple[str, str, str] | None:
+        api_key = (
+            self.state.chat_model_api_key
+            or os.getenv("CONFLUENCE_CHAT_MODEL_API_KEY", "").strip()
+        )
+        model = (
+            self.state.chat_model_name.strip()
+            if self.state.chat_model_name
+            else os.getenv("CONFLUENCE_CHAT_MODEL", "gpt-4.1-mini").strip()
+        )
+        api_base = (
+            self.state.chat_model_api_base.strip()
+            if self.state.chat_model_api_base
+            else os.getenv("CONFLUENCE_CHAT_MODEL_API_BASE", "https://api.openai.com/v1").strip()
+        )
+        env_enabled = os.getenv("CONFLUENCE_CHAT_MODEL_ENABLED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        enabled = self.state.chat_model_enabled or env_enabled or bool(self.state.chat_model_api_key)
+        if not enabled or not api_key or not model:
+            return None
+        return api_key, model, api_base.rstrip("/")
+
+    def _has_chat_model(self) -> bool:
+        return self._chat_model_config() is not None
+
+    @staticmethod
+    def _chat_completion_text(payload: dict[str, Any]) -> str:
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0]
+        if not isinstance(first, dict):
+            return ""
+        message = first.get("message")
+        if isinstance(message, dict):
+            content = message.get("content", "")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                chunks: list[str] = []
+                for entry in content:
+                    if isinstance(entry, dict) and entry.get("type") == "text":
+                        text = entry.get("text")
+                        if isinstance(text, str):
+                            chunks.append(text)
+                return "\n".join(chunks).strip()
+        text = first.get("text")
+        if isinstance(text, str):
+            return text.strip()
+        return ""
+
+    def _call_chat_model(self, *, system_prompt: str, user_prompt: str) -> str | None:
+        config = self._chat_model_config()
+        if config is None:
+            return None
+        api_key, model, api_base = config
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        for turn in self.state.conversation_history[-8:]:
+            role = turn.get("role", "")
+            content = turn.get("content", "")
+            if role in {"user", "assistant"} and isinstance(content, str) and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.25,
+            "max_tokens": 700,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        request = Request(
+            url=f"{api_base}/chat/completions",
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
+        try:
+            with urlopen(request, timeout=35) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            parsed = json.loads(raw)
+            text = self._chat_completion_text(parsed)
+            return text or None
+        except (HTTPError, URLError, json.JSONDecodeError, TimeoutError, OSError):
+            return None
+
+    @staticmethod
+    def _sources_for_prompt(results: list[SearchResult], *, max_items: int = 5) -> str:
+        lines: list[str] = []
+        for idx, item in enumerate(results[:max_items], start=1):
+            lines.append(
+                f"[{idx}] title={item.title} | space={item.space_key or 'n/a'} | "
+                f"summary={item.summary} | url={item.url or 'n/a'}"
+            )
+        return "\n".join(lines)
+
+    def _chat_only_turn(self, text: str) -> ConversationTurn:
+        model_text = self._call_chat_model(
+            system_prompt=(
+                "You are Einstein, a helpful conversational assistant for engineering teams. "
+                "Be concise, practical, and friendly. If no Confluence sources are provided, "
+                "be explicit that you are answering without document grounding."
+            ),
+            user_prompt=text,
+        )
+        if model_text:
+            reply = self._speak(model_text)
+        else:
+            reply = self._speak(
+                "I can do conversational responses when a chat model is configured. "
+                "Set chat model settings in the UI (API key + model) or via "
+                "CONFLUENCE_CHAT_MODEL_* environment variables."
+            )
+        self._append_history("assistant", reply.replace(f"{BOT_NAME}: ", "", 1))
+        return ConversationTurn(reply=reply, results=self.state.last_results, page_ids=self.state.last_page_ids)
+
     def _apply_settings(self, settings: dict[str, Any]) -> None:
         base_url = str(settings.get("base_url", "")).strip()
         if base_url:
@@ -129,6 +278,20 @@ class ConfluenceConversationAgent:
         api_token = str(settings.get("api_token", "")).strip()
         if api_token:
             self.state.api_token = api_token
+
+        if "chat_model_api_key" in settings:
+            raw = str(settings.get("chat_model_api_key") or "").strip()
+            self.state.chat_model_api_key = raw or None
+        if "chat_model_name" in settings:
+            raw = str(settings.get("chat_model_name") or "").strip()
+            if raw:
+                self.state.chat_model_name = raw
+        if "chat_model_api_base" in settings:
+            raw = str(settings.get("chat_model_api_base") or "").strip()
+            if raw:
+                self.state.chat_model_api_base = raw
+        if "chat_model_enabled" in settings:
+            self.state.chat_model_enabled = bool(settings.get("chat_model_enabled"))
 
         if "space_key" in settings:
             raw_space = settings.get("space_key")
@@ -264,7 +427,7 @@ class ConfluenceConversationAgent:
         intent = ConfluenceSearchAgent._query_intent(query)
         scope = f" in space {self.state.space_key}" if self.state.space_key else ""
         if not results:
-            return ConversationTurn(
+            turn = ConversationTurn(
                 reply=self._speak(
                     f"I couldn't find matching pages{scope} for '{query}'. "
                     "Try refining the question, changing the space filter, or asking for more general terms."
@@ -272,24 +435,57 @@ class ConfluenceConversationAgent:
                 results=[],
                 page_ids=[],
             )
+            self._append_history("assistant", turn.reply.replace(f"{BOT_NAME}: ", "", 1))
+            return turn
 
         mode = "I fetched additional matches. " if from_more else ""
         best = results[0]
         answer = self._answer_from_results(intent, best)
         result_summary = self._summarize_result_set(results)
         likely_link = best.url or "No link available."
-        return ConversationTurn(
-            reply=self._speak(
-                f"{mode}Answer: {answer}\n"
-                f"Most likely result link: {likely_link}\n"
-                f"Result summary:\n{result_summary}\n"
-                f"I found {len(results)} page(s){scope} for '{query}' "
-                f"(intent: {self._intent_label(intent)}).\n"
-                "You can ask 'summarize result 2' or 'show more'."
+        fallback_reply = (
+            f"{mode}Answer: {answer}\n"
+            f"Most likely result link: {likely_link}\n"
+            f"Result summary:\n{result_summary}\n"
+            f"I found {len(results)} page(s){scope} for '{query}' "
+            f"(intent: {self._intent_label(intent)}).\n"
+            "You can ask 'summarize result 2' or 'show more'."
+        )
+
+        conversational = self._call_chat_model(
+            system_prompt=(
+                "You are Einstein, a Confluence copilot-style assistant. "
+                "Respond conversationally but stay grounded to supplied sources. "
+                "Use inline citations like [1], [2] when citing source bullets."
             ),
+            user_prompt=(
+                f"User question: {query}\n"
+                f"Intent: {self._intent_label(intent)}\n"
+                f"Result count: {len(results)}{scope}\n\n"
+                "Sources:\n"
+                f"{self._sources_for_prompt(results)}\n\n"
+                "Write a practical answer with:\n"
+                "1) direct answer\n"
+                "2) why this is likely correct\n"
+                "3) one suggested follow-up question."
+            ),
+        )
+        if conversational:
+            reply_text = (
+                f"{mode}{conversational}\n\n"
+                f"Top source link: {likely_link}\n"
+                "Tip: ask 'summarize result 2' or 'compare #1 and #2'."
+            )
+        else:
+            reply_text = fallback_reply
+
+        turn = ConversationTurn(
+            reply=self._speak(reply_text),
             results=results,
             page_ids=page_ids,
         )
+        self._append_history("assistant", turn.reply.replace(f"{BOT_NAME}: ", "", 1))
+        return turn
 
     @staticmethod
     def _shorten(text: str, *, max_len: int = 180) -> str:
@@ -359,11 +555,13 @@ class ConfluenceConversationAgent:
             detail.append(f"Last modified: {item.last_modified}.")
         if item.url:
             detail.append(f"Link: {item.url}")
-        return ConversationTurn(
+        turn = ConversationTurn(
             reply=self._speak(" ".join(detail)),
             results=self.state.last_results,
             page_ids=self.state.last_page_ids,
         )
+        self._append_history("assistant", turn.reply.replace(f"{BOT_NAME}: ", "", 1))
+        return turn
 
     def _detailed_page_summary(self, *, item: SearchResult, page_id: str | None) -> str:
         if not page_id or not self.state.base_url:
@@ -474,11 +672,13 @@ class ConfluenceConversationAgent:
             f"Result {second_idx} unique focus: {right_only_text}. "
             "Ask for 'summarize result X' if you want deeper detail."
         )
-        return ConversationTurn(
+        turn = ConversationTurn(
             reply=self._speak(reply),
             results=self.state.last_results,
             page_ids=self.state.last_page_ids,
         )
+        self._append_history("assistant", turn.reply.replace(f"{BOT_NAME}: ", "", 1))
+        return turn
 
     @staticmethod
     def _intent_label(intent: QueryIntent) -> str:
